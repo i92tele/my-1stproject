@@ -5,7 +5,7 @@ import os
 import sys
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, filters, ConversationHandler, MessageHandler
 from datetime import datetime
 
 # Add current directory to path
@@ -72,7 +72,6 @@ class ForwardingBot:
         self.app.add_handler(CommandHandler("help", user_commands.help_command))
         self.app.add_handler(CommandHandler("subscribe", user_commands.subscribe))
         self.app.add_handler(CommandHandler("status", user_commands.status))
-        self.app.add_handler(CommandHandler("cancel", user_commands.cancel))
 
         # Handlers for ReplyKeyboardMarkup buttons
         self.app.add_handler(MessageHandler(filters.Regex('^Subscribe Now$'), user_commands.subscribe))
@@ -80,8 +79,29 @@ class ForwardingBot:
         self.app.add_handler(MessageHandler(filters.Regex('^Pricing$'), user_commands.pricing))
         self.app.add_handler(MessageHandler(filters.Regex('^Support$'), user_commands.support))
        
-        # Forwarding commands
-        self.app.add_handler(CommandHandler("add_destination", forwarding_commands.add_destination))
+        # Autofarming commands
+        self.app.add_handler(CommandHandler("set_ad", user_commands.set_ad))
+        self.app.add_handler(CommandHandler("my_ad", user_commands.my_ad))
+        self.app.add_handler(CommandHandler("set_schedule", user_commands.set_schedule))
+        self.app.add_handler(CommandHandler("pause_ad", user_commands.pause_ad))
+        self.app.add_handler(CommandHandler("resume_ad", user_commands.resume_ad))
+
+        # --- Conversation handler for adding a destination ---
+        add_dest_handler = ConversationHandler(
+            entry_points=[CommandHandler("add_destination", forwarding_commands.add_destination)],
+            states={
+                forwarding_commands.WAITING_FORWARD: [
+                    MessageHandler(filters.FORWARDED, forwarding_commands.receive_forwarded_message)
+                ]
+            },
+            fallbacks=[CommandHandler("cancel", forwarding_commands.cancel)],
+        )
+        self.app.add_handler(add_dest_handler)
+        
+        # We also need a handler for the top-level /cancel command
+        self.app.add_handler(CommandHandler("cancel", user_commands.cancel))
+
+        # Other forwarding commands
         self.app.add_handler(CommandHandler("list_destinations", forwarding_commands.list_destinations))
         self.app.add_handler(CommandHandler("remove_destination", forwarding_commands.remove_destination))
         
@@ -93,11 +113,11 @@ class ForwardingBot:
         # Callback query handler for buttons
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         
-        # Message handler for forwarding
-        self.app.add_handler(MessageHandler(
-            filters.ALL & ~filters.COMMAND,
-            forwarding_commands.handle_message
-        ))
+        # Message handler for forwarding (must be last)
+        # self.app.add_handler(MessageHandler(
+        #     filters.ALL & ~filters.COMMAND,
+        #     forwarding_commands.handle_message
+        # ))
         
         # Error handler
         self.app.add_error_handler(self.error_handler)
@@ -129,7 +149,7 @@ class ForwardingBot:
         if update and update.effective_message:
             try:
                 await update.effective_message.reply_text(
-                    "? An error occurred. Please try again or contact support."
+                    "An error occurred. Please try again or contact support."
                 )
             except:
                 pass
@@ -137,7 +157,7 @@ class ForwardingBot:
         # Notify admin
         if self.config.admin_id:
             try:
-                error_msg = f"?? Error in bot:\n\n{str(context.error)}\n\nUpdate: {str(update)}"
+                error_msg = f"Error in bot:\n\n{str(context.error)}\n\nUpdate: {str(update)}"
                 await context.bot.send_message(self.config.admin_id, error_msg[:4000])
             except:
                 pass

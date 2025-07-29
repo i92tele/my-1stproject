@@ -136,3 +136,80 @@ async def pricing(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Placeholder for Support."""
     await update.message.reply_text("For support, please contact the admin.")
+async def set_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows a user to set the message that will be forwarded."""
+    db = context.bot_data['db']
+    user_id = update.effective_user.id
+
+    # Check for subscription
+    subscription = await db.get_user_subscription(user_id)
+    if not subscription or not subscription['is_active']:
+        await update.message.reply_text("You need an active subscription to set an ad. Please /subscribe first.")
+        return
+
+    # Check if they provided a message to set
+    if not context.args:
+        await update.message.reply_text("Please provide the ad text after the command.\nExample: /set_ad This is my new ad!")
+        return
+
+    ad_text = " ".join(context.args)
+
+    # Save the ad to the database
+    success = await db.set_ad_message(user_id=user_id, text=ad_text)
+
+    if success:
+        await update.message.reply_text("✅ Your ad has been saved successfully!\nUse /set_schedule to set the posting frequency.")
+    else:
+        await update.message.reply_text("❌ There was an error saving your ad. Please try again.")
+
+async def my_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows the user their currently configured ad."""
+    await update.message.reply_text("This feature is coming soon! This will show your current ad.")
+
+async def set_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows a user to set the forwarding interval in minutes."""
+    db = context.bot_data['db']
+    user_id = update.effective_user.id
+
+    # Check for subscription
+    subscription = await db.get_user_subscription(user_id)
+    if not subscription or not subscription['is_active']:
+        await update.message.reply_text("You need an active subscription to set a schedule.")
+        return
+
+    # Check if an ad exists for the user
+    ad = await db.get_ad_by_user(user_id)
+    if not ad:
+        await update.message.reply_text("You need to set an ad first with /set_ad before setting a schedule.")
+        return
+
+    # Check for the interval argument
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "Please provide the interval in minutes after the command.\n"
+            "Example: /set_schedule 120 (for every 2 hours)"
+        )
+        return
+        
+    interval = int(context.args[0])
+    
+    # Add a reasonable minimum interval
+    if interval < 1:
+        await update.message.reply_text("The minimum interval is 1 minute.")
+        return
+    
+    # Save the schedule to the database
+    success = await db.set_ad_schedule(user_id=user_id, interval=interval)
+    
+    if success:
+        await update.message.reply_text(f"✅ Your ad schedule has been updated to post every {interval} minutes.")
+    else:
+        await update.message.reply_text("❌ There was an error updating your schedule. Please try again.")
+
+async def pause_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pauses the automated forwarding for the user."""
+    await update.message.reply_text("This feature is coming soon! This will pause your ad.")
+
+async def resume_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resumes the automated forwarding for the user."""
+    await update.message.reply_text("This feature is coming soon! This will resume your ad.")
