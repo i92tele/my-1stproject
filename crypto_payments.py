@@ -108,31 +108,89 @@ class CryptoPaymentProcessor:
         return bio.read()
     
     async def check_payment_status(self, payment_id: str) -> Dict:
-        """Check if payment has been received."""
+        """Check payment status from database."""
         payment = await self.db.get_payment(payment_id)
         if not payment:
-            return {'status': 'not_found'}
-            
+            return {'status': 'not_found', 'message': 'Payment not found'}
+        
+        # Check if payment is expired
+        if payment['expires_at'] < datetime.now():
+            return {'status': 'expired', 'message': 'Payment expired'}
+        
+        # Check if payment is completed
         if payment['status'] == 'completed':
-            return {'status': 'completed'}
-            
-        # Check if payment expired
-        if datetime.now() > payment['expires_at']:
-            await self.db.update_payment_status(payment_id, 'expired')
-            return {'status': 'expired'}
-            
-        return {'status': 'pending'}
-    
+            return {'status': 'completed', 'message': 'Payment confirmed'}
+        
+        # For now, return pending status
+        # In production, you would integrate with blockchain APIs to verify transactions
+        return {'status': 'pending', 'message': 'Payment pending verification'}
+
     async def verify_payment_manually(self, payment_id: str, tx_hash: str) -> bool:
-        """Manual payment verification by transaction hash."""
-        payment = await self.db.get_payment(payment_id)
-        if not payment:
+        """Manually verify payment with transaction hash."""
+        try:
+            # Update payment status
+            success = await self.db.update_payment_status(payment_id, 'completed', tx_hash)
+            if success:
+                # Get payment details
+                payment = await self.db.get_payment(payment_id)
+                if payment:
+                    # Activate user subscription
+                    await self.db.activate_subscription(
+                        payment['user_id'], 
+                        payment['tier'], 
+                        duration_days=30
+                    )
+                    self.logger.info(f"Subscription activated for user {payment['user_id']}")
+                    return True
             return False
-            
-        # Update payment with transaction hash
-        await self.db.update_payment_status(payment_id, 'verifying')
-        
-        # In a real implementation, you would verify the transaction on the blockchain
-        # For now, we'll mark it as completed manually
-        
-        return True
+        except Exception as e:
+            self.logger.error(f"Error verifying payment: {e}")
+            return False
+
+    async def process_expired_payments(self):
+        """Process and clean up expired payments."""
+        try:
+            # Get expired payments
+            async with self.db.pool.acquire() as conn:
+                expired_payments = await conn.fetch('''
+                    SELECT payment_id FROM payments 
+                    WHERE status = 'pending' AND expires_at < CURRENT_TIMESTAMP
+                ''')
+                
+                for payment in expired_payments:
+                    await self.db.update_payment_status(payment['payment_id'], 'expired')
+                    self.logger.info(f"Payment {payment['payment_id']} marked as expired")
+                    
+        except Exception as e:
+            self.logger.error(f"Error processing expired payments: {e}")
+
+    async def get_payment_statistics(self) -> Dict:
+        """Get payment statistics."""
+        try:
+            async with self.db.pool.acquire() as conn:
+                # Total payments
+                total_payments = await conn.fetchval("SELECT COUNT(*) FROM payments")
+                
+                # Completed payments
+                completed_payments = await conn.fetchval("SELECT COUNT(*) FROM payments WHERE status = 'completed'")
+                
+                # Total revenue
+                total_revenue = await conn.fetchval("SELECT COALESCE(SUM(amount_usd), 0) FROM payments WHERE status = 'completed'")
+                
+                # Revenue by cryptocurrency
+                revenue_by_crypto = await conn.fetch('''
+                    SELECT cryptocurrency, SUM(amount_usd) as total_usd, COUNT(*) as count
+                    FROM payments 
+                    WHERE status = 'completed' 
+                    GROUP BY cryptocurrency
+                ''')
+                
+                return {
+                    'total_payments': total_payments,
+                    'completed_payments': completed_payments,
+                    'total_revenue': float(total_revenue) if total_revenue else 0,
+                    'revenue_by_crypto': [dict(row) for row in revenue_by_crypto]
+                }
+        except Exception as e:
+            self.logger.error(f"Error getting payment statistics: {e}")
+            return {}

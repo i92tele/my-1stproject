@@ -8,7 +8,7 @@ class BotConfig:
         # Bot settings
         self.bot_token = os.getenv("BOT_TOKEN")
         self.admin_id = int(os.getenv("ADMIN_ID", "0"))
-        self.bot_name = "Message Forwarding Bot"
+        self.bot_name = "AutoFarming Bot"  # Updated bot name
         
         # Database
         self.database_url = os.getenv("DATABASE_URL")
@@ -18,6 +18,7 @@ class BotConfig:
         self.eth_address = os.getenv("ETH_ADDRESS")
         self.sol_address = os.getenv("SOL_ADDRESS")
         self.ltc_address = os.getenv("LTC_ADDRESS")
+        self.ton_address = os.getenv("TON_ADDRESS")  # TON wallet address
         
         # Security
         self.encryption_key = os.getenv("ENCRYPTION_KEY")
@@ -32,22 +33,19 @@ class BotConfig:
         # Subscription tiers
         self.subscription_tiers = {
             "basic": {
-                "price": 5.00,
+                "price": 9.99,
                 "duration_days": 30,
-                "max_destinations": 3,
-                "max_messages_day": 1000
-            },
-            "premium": {
-                "price": 15.00,
-                "duration_days": 30,
-                "max_destinations": 10,
-                "max_messages_day": 10000
+                "ad_slots": 1
             },
             "pro": {
-                "price": 30.00,
+                "price": 39.99,
                 "duration_days": 30,
-                "max_destinations": -1,  # Unlimited
-                "max_messages_day": -1   # Unlimited
+                "ad_slots": 5
+            },
+            "enterprise": {
+                "price": 99.99,
+                "duration_days": 30,
+                "ad_slots": 15
             }
         }
         
