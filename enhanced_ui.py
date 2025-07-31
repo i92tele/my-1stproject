@@ -1,181 +1,227 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from typing import List, Dict, Optional
+#!/usr/bin/env python3
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from typing import List, Dict, Any
 
 class EnhancedUI:
-    """User interface components."""
+    """Enhanced UI with professional styling inspired by AutoADS."""
+    
+    @staticmethod
+    def create_welcome_message(user_name: str, subscription_info: Dict = None) -> str:
+        """Create a professional welcome message with rocket branding."""
+        message = f"""
+🚀 **AutoFarming Pro**
+*#1 Automated Ad Posting Service*
 
-    def __init__(self, config):
-        self.config = config
+Welcome back, {user_name}! 👋
 
-    def get_main_menu_keyboard(self, user_data: Dict) -> ReplyKeyboardMarkup:
-        """Create main menu keyboard based on user status."""
-        has_subscription = user_data.get('has_subscription', False)
+"""
+        
+        if subscription_info:
+            tier_emoji = {"basic": "🥉", "pro": "🥈", "enterprise": "🥇"}
+            tier = subscription_info.get('tier', 'basic')
+            days_left = subscription_info.get('days_left', 0)
+            
+            message += f"""
+**Your Subscription:**
+{tier_emoji.get(tier, "📊")} {tier.title()} - {days_left} days remaining
 
-        if has_subscription:
-            keyboard = [
-                ['Forward Message', 'My Destinations'],
-                ['Status', 'Settings'],
-                ['Help']
-            ]
+"""
         else:
-            keyboard = [
-                ['Subscribe Now', 'How It Works'],
-                ['Pricing', 'Support']
+            message += """
+**Get Started:**
+Choose a subscription plan to start automating your ads!
+
+"""
+        
+        message += """
+*Why Choose AutoFarming Pro?*
+• 🚀 Hourly automated posting
+• 🤖 Fully customized bots  
+• 💰 Competitive pricing
+• 📊 Advanced analytics
+• 🛡️ Ban protection
+• ⚡ 24/7 support
+"""
+        
+        return message
+    
+    @staticmethod
+    def create_subscription_keyboard() -> InlineKeyboardMarkup:
+        """Create subscription tier selection keyboard."""
+        keyboard = [
+            [
+                InlineKeyboardButton("🥉 Basic - $9.99", callback_data="subscribe:basic"),
+                InlineKeyboardButton("🥈 Pro - $19.99", callback_data="subscribe:pro")
+            ],
+            [
+                InlineKeyboardButton("🥇 Enterprise - $29.99", callback_data="subscribe:enterprise")
+            ],
+            [
+                InlineKeyboardButton("📊 Compare Plans", callback_data="compare_plans"),
+                InlineKeyboardButton("❓ Help", callback_data="help")
             ]
-
-        return ReplyKeyboardMarkup(
-            keyboard,
-            resize_keyboard=True,
-            one_time_keyboard=False
-        )
-
-    def get_subscription_keyboard(self, current_tier: Optional[str] = None) -> InlineKeyboardMarkup:
-        """Create subscription selection keyboard."""
-        keyboard = []
-
-        for tier_id, tier_info in self.config.subscription_tiers.items():
-            if current_tier == tier_id:
-                button_text = f"✅ {tier_id.title()} (Current)"
-            else:
-                button_text = f"{tier_id.title()} - ${tier_info['price']}/mo"
-
-            keyboard.append([InlineKeyboardButton(
-                button_text,
-                callback_data=f"view_tier:{tier_id}"
-            )])
-
-        keyboard.append([InlineKeyboardButton("Back", callback_data="main_menu")])
-
+        ]
         return InlineKeyboardMarkup(keyboard)
+    
+    @staticmethod
+    def create_tier_details_message(tier: str, tier_info: Dict) -> str:
+        """Create detailed tier information message."""
+        price = tier_info.get('price', 0)
+        features = tier_info.get('features', [])
+        ad_slots = tier_info.get('ad_slots', 1)
+        
+        tier_names = {"basic": "Basic", "pro": "Pro", "enterprise": "Enterprise"}
+        tier_emojis = {"basic": "🥉", "pro": "🥈", "enterprise": "🥇"}
+        
+        message = f"""
+{tier_emojis.get(tier, "📊")} **{tier_names.get(tier, tier.title())} - ${price}/Month**
 
-    def format_tier_details(self, tier: str) -> str:
-        """Format detailed tier information."""
-        tier_info = self.config.get_tier_info(tier)
-        if not tier_info:
-            return "Invalid tier"
+**What's Included:**
+"""
+        
+        for feature in features:
+            message += f"• {feature}\n"
+        
+        message += f"""
+**Plan Details:**
+• 📊 Ad Slots: {ad_slots}
+• ⏰ Duration: 30 days
+• 🔄 Auto-renewal: {'Yes' if tier == 'enterprise' else 'No'}
 
-        details = {
-            'basic': {
-                'icon': 'Basic',
-                'features': [
-                    '✅ Forward to 3 destinations',
-                    '✅ 1,000 messages/day',
-                    '✅ Basic filters',
-                    '✅ Email support'
-                ]
-            },
-            'premium': {
-                'icon': 'Premium',
-                'features': [
-                    '✅ Forward to 10 destinations',
-                    '✅ 10,000 messages/day',
-                    '✅ Advanced filters',
-                    '✅ Priority support',
-                    '✅ Message scheduling'
-                ]
-            },
-            'pro': {
-                'icon': 'Professional',
-                'features': [
-                    '✅ Unlimited destinations',
-                    '✅ Unlimited messages',
-                    '✅ All features included',
-                    '✅ VIP 24/7 support',
-                    '✅ API access',
-                    '✅ Custom features'
-                ]
-            }
-        }
-
-        tier_detail = details.get(tier, {})
-        icon = tier_detail.get('icon', 'Plan')
-        features = tier_detail.get('features', [])
-
-        text = (
-            f"*{icon} Plan*\n"
-            f"Price: *${tier_info['price']}/month*\n\n"
-            f"*Features:*\n"
-            f"{chr(10).join(features)}\n\n"
-            f"Ready to subscribe? Choose your payment method below:"
-        )
-
-        return text
-
-    def get_payment_method_keyboard(self, tier: str) -> InlineKeyboardMarkup:
+*Ready to get started? Choose your payment method below!*
+"""
+        
+        return message
+    
+    @staticmethod
+    def create_payment_methods_keyboard(tier: str) -> InlineKeyboardMarkup:
         """Create payment method selection keyboard."""
         keyboard = [
-            [InlineKeyboardButton("Bitcoin", callback_data=f"pay:{tier}:bitcoin")],
-            [InlineKeyboardButton("Ethereum", callback_data=f"pay:{tier}:ethereum")],
-            [InlineKeyboardButton("Solana", callback_data=f"pay:{tier}:solana")],
-            [InlineKeyboardButton("Litecoin", callback_data=f"pay:{tier}:litecoin")],
-            [InlineKeyboardButton("Back", callback_data=f"view_tier:{tier}")]
+            [
+                InlineKeyboardButton("💎 TON", callback_data=f"pay:{tier}:ton"),
+                InlineKeyboardButton("₿ Bitcoin", callback_data=f"pay:{tier}:btc")
+            ],
+            [
+                InlineKeyboardButton("Ξ Ethereum", callback_data=f"pay:{tier}:eth"),
+                InlineKeyboardButton("💵 USDT", callback_data=f"pay:{tier}:usdt")
+            ],
+            [
+                InlineKeyboardButton("◎ Solana", callback_data=f"pay:{tier}:sol"),
+                InlineKeyboardButton("Ł Litecoin", callback_data=f"pay:{tier}:ltc")
+            ],
+            [
+                InlineKeyboardButton("🔙 Back to Plans", callback_data="back_to_plans")
+            ]
         ]
-
         return InlineKeyboardMarkup(keyboard)
+    
+    @staticmethod
+    def create_ad_management_message(user_id: int, ad_slots: List[Dict]) -> str:
+        """Create enhanced ad management message."""
+        message = f"""
+🎯 **Ad Management Dashboard**
 
-    def format_payment_instructions(self, payment_data: Dict) -> str:
-        """Format payment instructions."""
-        crypto_symbols = {
-            'bitcoin': 'BTC',
-            'ethereum': 'ETH',
-            'solana': 'SOL',
-            'litecoin': 'LTC'
-        }
-
-        symbol = crypto_symbols.get(payment_data['cryptocurrency'], '')
-
-        text = (
-            f"*Payment Details*\n\n"
-            f"*Amount:* `{payment_data['amount_crypto']} {symbol}` (${payment_data['amount_usd']})\n"
-            f"*Cryptocurrency:* {payment_data['cryptocurrency'].title()}\n"
-            f"*Payment ID:* `{payment_data['payment_memo']}`\n\n"
-            f"*Send to address:*\n"
-            f"`{payment_data['wallet_address']}`\n\n"
-            f"*Important:*\n"
-            f"• Include the Payment ID in the transaction memo/note\n"
-            f"• Payment expires in 2 hours\n"
-            f"• After sending, contact admin with transaction hash\n\n"
-            f"Scan the QR code or copy the address above to complete payment."
-        )
-
-        return text
-
-    def get_destinations_keyboard(self, destinations: List[Dict]) -> InlineKeyboardMarkup:
-        """Create destinations management keyboard."""
-        keyboard = []
-
-        for dest in destinations[:10]:
-            icon = "Channel" if dest['destination_type'] == 'channel' else "Group"
-            button_text = f"{icon}: {dest['destination_name'][:30]}"
-            callback_data = f"dest:{dest['id']}"
-
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-
-        action_buttons = []
-        if len(destinations) < 10:
-            action_buttons.append(InlineKeyboardButton("Add New", callback_data="add_destination"))
-
-        if action_buttons:
-            keyboard.append(action_buttons)
-
-        keyboard.append([InlineKeyboardButton("Back", callback_data="main_menu")])
-
+**Your Ad Slots:**
+"""
+        
+        for i, slot in enumerate(ad_slots, 1):
+            status = "🟢 Active" if slot.get('is_active') else "🔴 Inactive"
+            content = slot.get('ad_content', 'Not set')
+            destinations = len(slot.get('destinations', []))
+            
+            message += f"""
+**Slot {i}** {status}
+📝 Content: {content[:50]}{'...' if len(content) > 50 else ''}
+🎯 Destinations: {destinations} groups
+⏰ Interval: {slot.get('interval_minutes', 60)} minutes
+"""
+        
+        message += """
+*Click on a slot to manage it!*
+"""
+        
+        return message
+    
+    @staticmethod
+    def create_ad_slot_keyboard(slot_id: int, slot_info: Dict) -> InlineKeyboardMarkup:
+        """Create ad slot management keyboard."""
+        status = "🟢 Active" if slot_info.get('is_active') else "🔴 Inactive"
+        toggle_text = "🔴 Deactivate" if slot_info.get('is_active') else "🟢 Activate"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Set Content", callback_data=f"set_content:{slot_id}"),
+                InlineKeyboardButton("🎯 Set Destinations", callback_data=f"set_dests:{slot_id}")
+            ],
+            [
+                InlineKeyboardButton("⏰ Set Schedule", callback_data=f"set_schedule:{slot_id}"),
+                InlineKeyboardButton(toggle_text, callback_data=f"toggle_ad:{slot_id}")
+            ],
+            [
+                InlineKeyboardButton("📊 Analytics", callback_data=f"slot_analytics:{slot_id}"),
+                InlineKeyboardButton("🔙 Back to Slots", callback_data="back_to_slots")
+            ]
+        ]
         return InlineKeyboardMarkup(keyboard)
+    
+    @staticmethod
+    def create_analytics_message(stats: Dict) -> str:
+        """Create enhanced analytics message."""
+        message = f"""
+📊 **Analytics Dashboard**
 
-    def format_welcome_message(self, user_name: str) -> str:
-        """Format welcome message for new users."""
-        return (
-            f"Welcome to *{self.config.bot_name}*, {user_name}!\n\n"
-            f"I'm your personal message forwarding assistant. I can automatically forward "
-            f"your messages to multiple channels and groups with powerful filtering options.\n\n"
-            f"*Quick Start:*\n"
-            f"1. Subscribe to a plan with /subscribe\n"
-            f"2. Add destinations with /add_destination\n"
-            f"3. Send messages to forward them automatically!\n\n"
-            f"*Features:*\n"
-            f"- Forward to multiple destinations\n"
-            f"- Filter by keywords\n"
-            f"- Support for all message types\n"
-            f"- Reliable and fast\n\n"
-            f"Ready to get started? Use /subscribe to choose a plan!"
-        )
+**Overall Performance:**
+• 📈 Total Posts: {stats.get('total_posts', 0)}
+• 👥 Total Views: {stats.get('total_views', 0)}
+• 🎯 Success Rate: {stats.get('success_rate', 0)}%
+• 💰 Revenue: ${stats.get('revenue', 0):.2f}
+
+**This Month:**
+• 📅 Posts: {stats.get('monthly_posts', 0)}
+• 📈 Growth: {stats.get('growth_rate', 0)}%
+• 🎯 Engagement: {stats.get('engagement_rate', 0)}%
+
+**Top Performing Groups:**
+"""
+        
+        top_groups = stats.get('top_groups', [])
+        for i, group in enumerate(top_groups[:5], 1):
+            message += f"{i}. {group.get('name', 'Unknown')} - {group.get('views', 0)} views\n"
+        
+        return message
+    
+    @staticmethod
+    def create_status_badge(subscription_info: Dict) -> str:
+        """Create subscription status badge."""
+        if not subscription_info:
+            return "🔴 No Subscription"
+        
+        tier = subscription_info.get('tier', 'basic')
+        days_left = subscription_info.get('days_left', 0)
+        
+        tier_emojis = {"basic": "🥉", "pro": "🥈", "enterprise": "🥇"}
+        status_emoji = "🟢" if days_left > 0 else "🔴"
+        
+        return f"{status_emoji} {tier_emojis.get(tier, '📊')} {tier.title()} - {days_left} days"
+    
+    @staticmethod
+    def create_error_message(error: str) -> str:
+        """Create user-friendly error message."""
+        return f"""
+❌ **Oops! Something went wrong**
+
+{error}
+
+Please try again or contact support if the problem persists.
+"""
+    
+    @staticmethod
+    def create_success_message(action: str) -> str:
+        """Create success confirmation message."""
+        return f"""
+✅ **Success!**
+
+{action} has been completed successfully.
+
+You can continue using the bot or check your dashboard for updates.
+"""

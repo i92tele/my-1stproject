@@ -221,7 +221,7 @@ class AdScheduler:
                         successful_sends += 1
                         
                         # Anti-spam delay between sends (randomized)
-                        delay = random.randint(20, 40)
+                        delay = random.randint(30, 60)
                         logger.info(f"Waiting {delay} seconds before next send...")
                         await asyncio.sleep(delay)
                 

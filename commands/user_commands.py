@@ -14,23 +14,40 @@ SETTING_AD_DESTINATIONS = 2
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user starts the bot."""
     user = update.effective_user
-    welcome_text = (
-        f"Welcome {user.first_name}! 👋\n\n"
-        "I'm the AutoFarming Bot - your automated Telegram advertising assistant.\n\n"
-        "Choose an option below to get started:"
-    )
+    db = context.bot_data['db']
     
-    # Create inline keyboard with main commands
+    # Get user subscription info
+    subscription = await db.get_user_subscription(user.id)
+    subscription_info = None
+    if subscription and subscription.get('subscription_expires'):
+        from datetime import datetime
+        days_left = (subscription['subscription_expires'] - datetime.now()).days
+        subscription_info = {
+            'tier': subscription.get('subscription_tier', 'basic'),
+            'days_left': max(0, days_left)
+        }
+    
+    # Create professional welcome message
+    from enhanced_ui import EnhancedUI
+    welcome_text = EnhancedUI.create_welcome_message(user.first_name, subscription_info)
+    
+    # Create enhanced keyboard
     keyboard = [
-        [InlineKeyboardButton("📊 Analytics", callback_data="cmd:analytics")],
-        [InlineKeyboardButton("🎁 Referral Program", callback_data="cmd:referral")],
-        [InlineKeyboardButton("💎 Subscribe", callback_data="cmd:subscribe")],
-        [InlineKeyboardButton("📋 My Ads", callback_data="cmd:my_ads")],
-        [InlineKeyboardButton("❓ Help", callback_data="cmd:help")]
+        [
+            InlineKeyboardButton("📊 Analytics", callback_data="cmd:analytics"),
+            InlineKeyboardButton("🎯 My Ads", callback_data="cmd:my_ads")
+        ],
+        [
+            InlineKeyboardButton("💎 Subscribe", callback_data="cmd:subscribe"),
+            InlineKeyboardButton("🎁 Referral", callback_data="cmd:referral")
+        ],
+        [
+            InlineKeyboardButton("❓ Help", callback_data="cmd:help")
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def handle_command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle command button callbacks."""
@@ -174,18 +191,26 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Error loading referral information. Please try again later.")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shows subscription plans and payment options."""
+    """Shows subscription plans with enhanced UI and competitive pricing."""
     db = context.bot_data['db']
     user_id = update.effective_user.id
     
     # Get current subscription status
     subscription = await db.get_user_subscription(user_id)
     
-    # Create subscription plans keyboard
+    # Create enhanced subscription plans keyboard
     keyboard = [
-        [InlineKeyboardButton("💎 Basic - $9.99/month", callback_data="subscribe:basic")],
-        [InlineKeyboardButton("🚀 Pro - $39.99/month", callback_data="subscribe:pro")],
-        [InlineKeyboardButton("🏢 Enterprise - $99.99/month", callback_data="subscribe:enterprise")]
+        [
+            InlineKeyboardButton("🥉 Basic - $9.99", callback_data="subscribe:basic"),
+            InlineKeyboardButton("🥈 Pro - $19.99", callback_data="subscribe:pro")
+        ],
+        [
+            InlineKeyboardButton("🥇 Enterprise - $29.99", callback_data="subscribe:enterprise")
+        ],
+        [
+            InlineKeyboardButton("📊 Compare Plans", callback_data="compare_plans"),
+            InlineKeyboardButton("❓ Help", callback_data="help")
+        ]
     ]
     
     if subscription and subscription['is_active']:
@@ -194,12 +219,13 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text = "❌ **No active subscription**"
     
     message_text = (
-        f"💳 **Subscription Plans**\n\n"
+        f"🚀 **AutoFarming Pro - Subscription Plans**\n\n"
         f"{status_text}\n\n"
         "**Choose your plan:**\n"
-        "• **Basic** ($9.99): 1 ad slot, 30 days\n"
-        "• **Pro** ($39.99): 5 ad slots, 30 days\n"
-        "• **Enterprise** ($99.99): 15 ad slots, 30 days\n\n"
+        "• **🥉 Basic** ($9.99): 1 ad slot, hourly posting\n"
+        "• **🥈 Pro** ($19.99): 3 ad slots, ban protection\n"
+        "• **🥇 Enterprise** ($29.99): 5 ad slots, auto-renewal\n\n"
+        "*Competitive pricing - 25-67% cheaper than competitors!*\n\n"
         "Select a plan to proceed with payment:"
     )
     
@@ -216,19 +242,29 @@ async def handle_subscription_callback(update: Update, context: ContextTypes.DEF
         
         # Create TON payment button
         keyboard = [
-            [InlineKeyboardButton("💎 Pay with TON", callback_data=f"pay:{tier}:ton")]
+            [InlineKeyboardButton("💎 Pay with TON", callback_data=f"pay:{tier}:ton")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")]
         ]
         
-        tier_info = context.bot_data['config'].get_tier_info(tier)
-        price = tier_info['price']
+        # Get tier info with new pricing
+        tier_prices = {"basic": 9.99, "pro": 19.99, "enterprise": 29.99}
+        tier_slots = {"basic": 1, "pro": 3, "enterprise": 5}
+        tier_emojis = {"basic": "🥉", "pro": "🥈", "enterprise": "🥇"}
+        
+        price = tier_prices.get(tier, 9.99)
+        slots = tier_slots.get(tier, 1)
+        emoji = tier_emojis.get(tier, "📊")
         
         message_text = (
-            f"💳 **{tier.title()} Plan - ${price}**\n\n"
+            f"{emoji} **{tier.title()} Plan - ${price}**\n\n"
             f"**Features:**\n"
-            f"• {tier_info['ad_slots']} ad slot(s)\n"
-            f"• {tier_info['duration_days']} days duration\n"
-            f"• Automated posting\n"
-            f"• Analytics dashboard\n\n"
+            f"• {slots} ad slot(s)\n"
+            f"• 30 days duration\n"
+            f"• 🚀 Hourly automated posting\n"
+            f"• 📊 Analytics dashboard\n"
+            f"• 🤖 Fully customized bot\n"
+            f"{'• 🛡️ Ban protection' if tier != 'basic' else ''}\n"
+            f"{'• 🔄 Auto-renewal' if tier == 'enterprise' else ''}\n\n"
             "**Payment Method:** TON (The Open Network)\n\n"
             "Click below to generate payment QR code:"
         )
@@ -284,7 +320,10 @@ async def handle_payment_request(update: Update, context: ContextTypes.DEFAULT_T
         )
         
         # Add payment tracking keyboard
-        keyboard = [[InlineKeyboardButton("🔍 Check Payment Status", callback_data=f"check_payment:{payment_data['payment_id']}")]]
+        keyboard = [
+            [InlineKeyboardButton("🔍 Check Payment Status", callback_data=f"check_payment:{payment_data['payment_id']}")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
@@ -386,6 +425,9 @@ async def my_ads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         callback_data = f"manage_slot:{slot['id']}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
+    # Add back to main menu button
+    keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
@@ -455,7 +497,8 @@ async def handle_ad_slot_callback(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("🗓️ Set Schedule", callback_data=f"set_schedule:{slot_id}")],
         [InlineKeyboardButton("🎯 Set Destinations", callback_data=f"set_dests:{slot_id}")],
         [InlineKeyboardButton("⏸️ Pause Ad" if is_active else "▶️ Resume Ad", callback_data=f"toggle_ad:{slot_id}")],
-        [InlineKeyboardButton("⬅️ Back to All Slots", callback_data="back_to_slots")]
+        [InlineKeyboardButton("⬅️ Back to All Slots", callback_data="back_to_slots")],
+        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -610,6 +653,7 @@ async def set_destinations_start(update: Update, context: ContextTypes.DEFAULT_T
         )])
     
     keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data=f"manage_slot:{slot_id}")])
+    keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await query.edit_message_text(

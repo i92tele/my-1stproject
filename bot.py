@@ -43,8 +43,15 @@ class AutoFarmingBot:
             fallbacks=[CommandHandler('cancel', user_commands.cancel_conversation)],
             per_chat=True
         )
+        set_destinations_conv = ConversationHandler(
+            entry_points=[CallbackQueryHandler(user_commands.set_destinations_start, pattern='^set_dests:.*$')],
+            states={user_commands.SETTING_AD_DESTINATIONS: [CallbackQueryHandler(user_commands.select_destination_category, pattern='^select_category:.*$')]},
+            fallbacks=[CommandHandler('cancel', user_commands.cancel_conversation)],
+            per_chat=True
+        )
         self.app.add_handler(set_content_conv)
         self.app.add_handler(set_schedule_conv)
+        self.app.add_handler(set_destinations_conv)
 
         # --- Main Commands ---
         self.app.add_handler(CommandHandler("my_ads", user_commands.my_ads_command))
