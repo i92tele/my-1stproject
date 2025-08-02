@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv("config/.env")
 import os
 from typing import Optional
 

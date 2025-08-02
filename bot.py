@@ -2,6 +2,7 @@
 import logging
 import os
 import sys
+import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -24,7 +25,8 @@ class AutoFarmingBot:
     def __init__(self):
         self.config = BotConfig.load_from_env()
         self.db = DatabaseManager(self.config, logger)
-        self.app = Application.builder().token(self.config.bot_token).build()
+        # Add timeout and connection limits
+        self.app = Application.builder().token(self.config.bot_token).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
         self.app.bot_data.update({'db': self.db, 'config': self.config, 'logger': logger})
 
     def setup_handlers(self):
@@ -77,30 +79,52 @@ class AutoFarmingBot:
         self.app.add_error_handler(self.error_handler)
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        data = query.data
-        if data.startswith("manage_slot:") or data == "back_to_slots" or data.startswith("toggle_ad:"):
-            await user_commands.handle_ad_slot_callback(update, context)
-        elif data.startswith("subscribe:") or data.startswith("pay:") or data.startswith("check_payment:"):
-            await user_commands.handle_subscription_callback(update, context)
-        elif data.startswith("cmd:"):
-            await user_commands.handle_command_callback(update, context)
-        elif data.startswith("select_category:"):
-            await user_commands.select_destination_category(update, context)
-        else:
-            await query.answer("This feature is coming soon!")
+        try:
+            query = update.callback_query
+            data = query.data
+            if data.startswith("manage_slot:") or data == "back_to_slots" or data.startswith("toggle_ad:"):
+                await user_commands.handle_ad_slot_callback(update, context)
+            elif data.startswith("subscribe:") or data.startswith("pay:") or data.startswith("check_payment:"):
+                await user_commands.handle_subscription_callback(update, context)
+            elif data.startswith("cmd:"):
+                await user_commands.handle_command_callback(update, context)
+            elif data.startswith("select_category:"):
+                await user_commands.select_destination_category(update, context)
+            else:
+                await query.answer("This feature is coming soon!")
+        except Exception as e:
+            logger.error(f"Error in handle_callback: {e}")
+            try:
+                await update.callback_query.answer("An error occurred. Please try again.")
+            except:
+                pass
 
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+        # Add timeout protection
+        if hasattr(context, 'error') and 'timeout' in str(context.error).lower():
+            logger.warning("Timeout detected, continuing...")
 
     async def post_init(self, app: Application):
         logger.info("Initializing bot services...")
-        await self.db.initialize()
-        logger.info("Bot initialization complete!")
+        try:
+            await asyncio.wait_for(self.db.initialize(), timeout=30.0)
+            logger.info("Bot initialization complete!")
+        except asyncio.TimeoutError:
+            logger.error("Database initialization timed out!")
+            raise
+        except Exception as e:
+            logger.error(f"Database initialization failed: {e}")
+            raise
 
     async def shutdown(self, app: Application):
         logger.info("Shutting down bot...")
-        await self.db.close()
+        try:
+            await asyncio.wait_for(self.db.close(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning("Database close timed out, forcing close...")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
 
     def run(self):
         """Run the bot."""
@@ -114,10 +138,16 @@ class AutoFarmingBot:
             self.app.post_init = self.post_init
             self.app.post_shutdown = self.shutdown
             logger.info(f"Starting bot...")
-            self.app.run_polling(drop_pending_updates=True)
+            # Add timeout and error handling for polling
+            self.app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+        except KeyboardInterrupt:
+            logger.info("Received interrupt signal, shutting down gracefully...")
+        except Exception as e:
+            logger.error(f"Bot crashed: {e}")
         finally:
-            if os.path.exists(lock_file): os.remove(lock_file)
-            logger.info("Lock file removed. Bot shut down cleanly.")
+            if os.path.exists(lock_file): 
+                os.remove(lock_file)
+                logger.info("Lock file removed. Bot shut down cleanly.")
 
 if __name__ == '__main__':
     bot = AutoFarmingBot()

@@ -13,41 +13,47 @@ SETTING_AD_DESTINATIONS = 2
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user starts the bot."""
-    user = update.effective_user
-    db = context.bot_data['db']
-    
-    # Get user subscription info
-    subscription = await db.get_user_subscription(user.id)
-    subscription_info = None
-    if subscription and subscription.get('subscription_expires'):
-        from datetime import datetime
-        days_left = (subscription['subscription_expires'] - datetime.now()).days
-        subscription_info = {
-            'tier': subscription.get('subscription_tier', 'basic'),
-            'days_left': max(0, days_left)
-        }
-    
-    # Create professional welcome message
-    from enhanced_ui import EnhancedUI
-    welcome_text = EnhancedUI.create_welcome_message(user.first_name, subscription_info)
-    
-    # Create enhanced keyboard
-    keyboard = [
-        [
-            InlineKeyboardButton("📊 Analytics", callback_data="cmd:analytics"),
-            InlineKeyboardButton("🎯 My Ads", callback_data="cmd:my_ads")
-        ],
-        [
-            InlineKeyboardButton("💎 Subscribe", callback_data="cmd:subscribe"),
-            InlineKeyboardButton("🎁 Referral", callback_data="cmd:referral")
-        ],
-        [
-            InlineKeyboardButton("❓ Help", callback_data="cmd:help")
+    try:
+        user = update.effective_user
+        db = context.bot_data['db']
+        
+        # Get user subscription info
+        subscription = await db.get_user_subscription(user.id)
+        subscription_info = None
+        if subscription and subscription.get('subscription_expires'):
+            from datetime import datetime
+            days_left = (subscription['subscription_expires'] - datetime.now()).days
+            subscription_info = {
+                'tier': subscription.get('subscription_tier', 'basic'),
+                'days_left': max(0, days_left)
+            }
+        
+        # Create professional welcome message
+        from enhanced_ui import EnhancedUI
+        welcome_text = EnhancedUI.create_welcome_message(user.first_name, subscription_info)
+        
+        # Create enhanced keyboard
+        keyboard = [
+            [
+                InlineKeyboardButton("📊 Analytics", callback_data="cmd:analytics"),
+                InlineKeyboardButton("🎯 My Ads", callback_data="cmd:my_ads")
+            ],
+            [
+                InlineKeyboardButton("💎 Subscribe", callback_data="cmd:subscribe"),
+                InlineKeyboardButton("🎁 Referral", callback_data="cmd:referral")
+            ],
+            [
+                InlineKeyboardButton("❓ Help", callback_data="cmd:help")
+            ]
         ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Error in start command: {e}")
+        error_message = "❌ Sorry, something went wrong. Please try again or contact support."
+        await update.message.reply_text(error_message)
 
 async def handle_command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle command button callbacks."""
@@ -381,67 +387,79 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def my_ads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays the user's ad slots."""
-    db = context.bot_data['db']
-    user_id = update.effective_user.id
+    try:
+        db = context.bot_data['db']
+        user_id = update.effective_user.id
 
-    # Create user if they don't exist
-    user = await db.get_user(user_id)
-    if not user:
-        await db.create_user(
-            user_id=user_id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name
-        )
+        # Create user if they don't exist
+        user = await db.get_user(user_id)
+        if not user:
+            await db.create_user(
+                user_id=user_id,
+                username=update.effective_user.username,
+                first_name=update.effective_user.first_name
+            )
 
-    subscription = await db.get_user_subscription(user_id)
-    if not subscription or not subscription['is_active']:
-        reply_obj = update.message if update.message else update.callback_query.message
-        await reply_obj.reply_text(
-            "❌ You need an active subscription to manage ads.\n\n"
-            "Please contact the admin to get a subscription."
-        )
-        return
+        subscription = await db.get_user_subscription(user_id)
+        if not subscription or not subscription['is_active']:
+            reply_obj = update.message if update.message else update.callback_query.message
+            await reply_obj.reply_text(
+                "❌ You need an active subscription to manage ads.\n\n"
+                "Please contact the admin to get a subscription."
+            )
+            return
 
-    ad_slots = await db.get_or_create_ad_slots(user_id, subscription['tier'])
-    if not ad_slots:
-        reply_obj = update.message if update.message else update.callback_query.message
-        await reply_obj.reply_text("Could not find any ad slots for your subscription tier.")
-        return
+        ad_slots = await db.get_or_create_ad_slots(user_id, subscription['tier'])
+        if not ad_slots:
+            reply_obj = update.message if update.message else update.callback_query.message
+            await reply_obj.reply_text("Could not find any ad slots for your subscription tier.")
+            return
 
-    message_text = "📢 **Your Ad Slots**\n\nSelect a slot to manage it:"
-    keyboard = []
-    
-    for slot in ad_slots:
-        slot_number = slot['slot_number']
-        status_icon = "✅" if slot['is_active'] else "⏸️"
+        message_text = "📢 **Your Ad Slots**\n\nSelect a slot to manage it:"
+        keyboard = []
         
-        if slot['ad_content']:
-            content_preview = slot['ad_content'][:20] + "..." if len(slot['ad_content']) > 20 else slot['ad_content']
-            ad_info = f" - {content_preview}"
+        for slot in ad_slots:
+            slot_number = slot['slot_number']
+            status_icon = "✅" if slot['is_active'] else "⏸️"
+            
+            if slot['ad_content']:
+                content_preview = slot['ad_content'][:20] + "..." if len(slot['ad_content']) > 20 else slot['ad_content']
+                ad_info = f" - {content_preview}"
+            else:
+                ad_info = " - (Empty)"
+
+            button_text = f"Slot {slot_number} {status_icon}{ad_info}"
+            callback_data = f"manage_slot:{slot['id']}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
+        # Add back to main menu button
+        keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                message_text, 
+                reply_markup=reply_markup, 
+                parse_mode='Markdown'
+            )
         else:
-            ad_info = " - (Empty)"
-
-        button_text = f"Slot {slot_number} {status_icon}{ad_info}"
-        callback_data = f"manage_slot:{slot['id']}"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-
-    # Add back to main menu button
-    keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text(
-            message_text, 
-            reply_markup=reply_markup, 
-            parse_mode='Markdown'
-        )
-    else:
-        await update.message.reply_text(
-            message_text, 
-            reply_markup=reply_markup, 
-            parse_mode='Markdown'
-        )
+            await update.message.reply_text(
+                message_text, 
+                reply_markup=reply_markup, 
+                parse_mode='Markdown'
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in my_ads_command: {e}")
+        error_message = "❌ Sorry, there was an error loading your ads. Please try again."
+        keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(error_message, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(error_message, reply_markup=reply_markup)
 
 # --- Ad Slot Management ---
 

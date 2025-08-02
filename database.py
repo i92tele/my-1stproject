@@ -460,3 +460,52 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error deactivating expired subscriptions: {e}")
             return 0
+    
+    async def get_active_ad_slots(self):
+        """Get all active ad slots."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch('''
+                SELECT * FROM ad_slots 
+                WHERE is_active = true
+            ''')
+            return [dict(row) for row in rows]
+
+    async def get_managed_groups(self) -> List[Dict[str, Any]]:
+        """Get all managed groups."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch('''
+                SELECT * FROM managed_groups 
+                WHERE is_active = true
+            ''')
+            return [dict(row) for row in rows]
+
+    async def get_ad_destinations(self, ad_slot_id: int) -> List[Dict[str, Any]]:
+        """Get destinations for a specific ad slot."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch('''
+                SELECT ad.*, mg.group_name, mg.category
+                FROM ad_destinations ad
+                JOIN managed_groups mg ON ad.destination_chat_id = mg.group_id::text
+                WHERE ad.ad_slot_id = $1
+            ''', ad_slot_id)
+            return [dict(row) for row in rows]
+
+    async def log_ad_post(self, ad_slot_id: int, destination: str, status: str) -> bool:
+        """Log an ad post attempt."""
+        try:
+            async with self.pool.acquire() as conn:
+                # Get user_id from ad_slot
+                slot_info = await conn.fetchrow('''
+                    SELECT user_id FROM ad_slots WHERE id = $1
+                ''', ad_slot_id)
+                
+                if slot_info:
+                    await conn.execute('''
+                        INSERT INTO ad_posts (user_id, slot_id, destination, success, created_at)
+                        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                    ''', slot_info['user_id'], ad_slot_id, destination, status == 'success')
+                    return True
+                return False
+        except Exception as e:
+            self.logger.error(f"Error logging ad post: {e}")
+            return False

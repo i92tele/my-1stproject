@@ -1,0 +1,44 @@
+# Bot Configuration
+BOT_TOKEN=your_telegram_bot_token_here
+ADMIN_ID=your_admin_user_id_here
+
+# Database Configuration
+DATABASE_URL=postgresql://username:password@localhost/database_name
+
+# Cryptocurrency Wallets
+TON_ADDRESS=EQD...your_ton_wallet_address_here
+BTC_ADDRESS=your_bitcoin_address_here
+ETH_ADDRESS=your_ethereum_address_here
+SOL_ADDRESS=your_solana_address_here
+LTC_ADDRESS=your_litecoin_address_here
+
+# Security Keys
+ENCRYPTION_KEY=your_32_character_encryption_key_here
+SECRET_KEY=your_secret_key_here
+
+# Redis Configuration (Optional)
+REDIS_URL=redis://localhost:6379/0
+
+# Environment
+ENVIRONMENT=production
+
+# Worker Accounts (Add your worker credentials)
+WORKER_1_API_ID=your_worker_1_api_id
+WORKER_1_API_HASH=your_worker_1_api_hash
+WORKER_1_PHONE=your_worker_1_phone_number
+
+WORKER_2_API_ID=your_worker_2_api_id
+WORKER_2_API_HASH=your_worker_2_api_hash
+WORKER_2_PHONE=your_worker_2_phone_number
+
+WORKER_3_API_ID=your_worker_3_api_id
+WORKER_3_API_HASH=your_worker_3_api_hash
+WORKER_3_PHONE=your_worker_3_phone_number
+
+WORKER_4_API_ID=your_worker_4_api_id
+WORKER_4_API_HASH=your_worker_4_api_hash
+WORKER_4_PHONE=your_worker_4_phone_number
+
+WORKER_5_API_ID=your_worker_5_api_id
+WORKER_5_API_HASH=your_worker_5_api_hash
+WORKER_5_PHONE=your_worker_5_phone_number 

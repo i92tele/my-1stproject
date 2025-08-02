@@ -1,40 +1,36 @@
-import asyncio
+#!/usr/bin/env python3
+"""
+Ad Scheduler for AutoFarming Pro
+Manages automated ad posting with worker rotation
+"""
+
 import os
-import sys
-from datetime import datetime
-from dotenv import load_dotenv
-from telethon import TelegramClient
-from telethon.errors import FloodWaitError, ChatWriteForbiddenError, UserBannedInChannelError, InviteRequestSentError, UserPrivacyRestrictedError
-import logging
+import asyncio
 import random
-from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.functions.channels import GetParticipantRequest
-# from telethon.tl.functions import functions  # This import is not needed
-
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-# Import your existing modules
-from database import DatabaseManager
+import logging
+from datetime import datetime, timedelta
+from telethon import TelegramClient
+from telethon.tl.functions.channels import JoinChannelRequest, GetParticipantRequest
+from telethon.errors import InviteRequestSentError, UserPrivacyRestrictedError
 from config import BotConfig
+from database import DatabaseManager
 
 # Setup logging
-os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/scheduler.log'),
+        logging.FileHandler('scheduler.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv('config/.env')
-
 class AdScheduler:
     def __init__(self):
+        # Worker rotation to prevent overuse
+        self.worker_usage = {}
+        self.max_uses_per_hour = 10  # Limit each worker to 10 uses per hour
         self.config = BotConfig.load_from_env()
         self.db = DatabaseManager(self.config, logger)
         self.worker_clients = []
@@ -104,7 +100,7 @@ class AdScheduler:
             logger.info(f"📝 Join request sent for: {group_username}")
             return True
         except UserPrivacyRestrictedError:
-            logger.warning(f"🔒 Cannot join {group_username} due to privacy settings")
+            logger.warning(f"�� Cannot join {group_username} due to privacy settings")
             return False
         except Exception as e:
             logger.error(f"❌ Failed to join {group_username}: {e}")
@@ -130,146 +126,117 @@ class AdScheduler:
             logger.error(f"❌ Error checking/joining group {group_username}: {e}")
             return False
     
-    async def send_ad(self, worker_client, ad_slot, destination):
-        """Send a single ad to a destination."""
+    async def send_ad_with_worker(self, worker_client, group_username: str, message: str) -> bool:
+        """Send an ad message using a worker account."""
         try:
-            # Handle different destination formats
-            if destination.startswith('@'):
-                entity = destination
-            elif destination.startswith('https://t.me/'):
-                # Extract username or invite link
-                if '+' in destination:
-                    # It's an invite link
-                    entity = destination
-                else:
-                    # It's a public username link
-                    entity = '@' + destination.split('/')[-1]
-            else:
-                entity = destination
-            
             # Ensure worker is in the group
-            if not await self.ensure_worker_in_group(worker_client, entity):
-                logger.error(f"❌ Worker cannot access {entity}")
-                return False
-            
-            # Get the actual entity
-            try:
-                chat = await worker_client.get_entity(entity)
-            except Exception as e:
-                logger.error(f"Could not find entity {entity}: {e}")
+            if not await self.ensure_worker_in_group(worker_client, group_username):
                 return False
             
             # Send the message
-            if ad_slot['ad_file_id']:
-                # For now, we'll just send text
-                # Later you can implement photo/video sending using the file_id
-                message = ad_slot['ad_content'] or "Check out this amazing opportunity!"
-            else:
-                message = ad_slot['ad_content']
+            entity = await worker_client.get_entity(group_username)
+            await worker_client.send_message(entity, message)
             
-            await worker_client.send_message(chat, message)
-            logger.info(f"✅ Sent ad {ad_slot['id']} to {destination}")
+            logger.info(f"✅ Ad sent to {group_username}")
             return True
             
-        except FloodWaitError as e:
-            logger.warning(f"Flood wait error: need to wait {e.seconds} seconds")
-            await asyncio.sleep(e.seconds)
-            return False
-        except ChatWriteForbiddenError:
-            logger.error(f"Cannot send to {destination}: forbidden")
-            return False
-        except UserBannedInChannelError:
-            logger.error(f"Worker banned in {destination}")
-            return False
         except Exception as e:
-            logger.error(f"Error sending to {destination}: {e}")
+            logger.error(f"❌ Failed to send ad to {group_username}: {e}")
             return False
     
-    async def process_due_ads(self):
-        """Process all ads that are due to be sent."""
+    async def post_scheduled_ads(self):
+        """Post scheduled ads to all managed groups."""
         try:
-            # Get all active ads that need to be sent
-            due_ads = await self.db.get_active_ads_to_send()
+            # Get all active ad slots
+            ad_slots = await self.db.get_active_ad_slots()
             
-            if not due_ads:
-                logger.info("No ads are due at this time")
+            if not ad_slots:
+                logger.info("�� No active ad slots found")
                 return
             
-            logger.info(f"Found {len(due_ads)} ad(s) to process")
+            # Get managed groups
+            managed_groups = await self.db.get_managed_groups()
             
-            for ad_slot in due_ads:
+            if not managed_groups:
+                logger.warning("⚠️ No managed groups found")
+                return
+            
+            logger.info(f"📤 Posting {len(ad_slots)} ads to {len(managed_groups)} groups")
+            
+            for ad_slot in ad_slots:
                 # Get destinations for this ad slot
-                destinations = await self.db.get_destinations_for_slot(ad_slot['id'])
+                destinations = await self.db.get_ad_destinations(ad_slot['id'])
                 
                 if not destinations:
-                    logger.warning(f"Ad slot {ad_slot['id']} has no destinations set")
+                    logger.warning(f"⚠️ No destinations found for ad slot {ad_slot['id']}")
                     continue
                 
-                logger.info(f"Processing ad slot {ad_slot['id']} with {len(destinations)} destinations")
+                # Get worker for this ad
+                worker_client = self.get_next_worker()
+                if not worker_client:
+                    logger.error("❌ No worker available")
+                    continue
                 
-                # Get a worker for this batch
-                worker = self.get_next_worker()
-                if not worker:
-                    logger.error("No worker accounts available")
-                    break
-                
-                # Send to each destination
-                successful_sends = 0
+                # Post to each destination
                 for destination in destinations:
-                    success = await self.send_ad(worker, ad_slot, destination)
-                    if success:
-                        successful_sends += 1
+                    try:
+                        success = await self.send_ad_with_worker(
+                            worker_client, 
+                            destination['group_username'], 
+                            ad_slot['content']
+                        )
                         
-                        # Anti-spam delay between sends (randomized)
-                        delay = random.randint(30, 60)
-                        logger.info(f"Waiting {delay} seconds before next send...")
-                        await asyncio.sleep(delay)
-                
-                # Update last sent time if we sent to at least one destination
-                if successful_sends > 0:
-                    await self.db.update_ad_last_sent(ad_slot['id'])
-                    logger.info(f"✅ Completed ad slot {ad_slot['id']}: {successful_sends}/{len(destinations)} sent")
-                else:
-                    logger.warning(f"⚠️ Ad slot {ad_slot['id']}: No messages sent successfully")
-                
-                # Delay between different ad campaigns
-                await asyncio.sleep(10)
-                
+                        if success:
+                            # Log the post
+                            await self.db.log_ad_post(
+                                ad_slot['id'],
+                                destination['group_username'],
+                                'success'
+                            )
+                        
+                        # Anti-spam delay
+                        await asyncio.sleep(random.randint(30, 60))
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Error posting to {destination['group_username']}: {e}")
+                        await self.db.log_ad_post(
+                            ad_slot['id'],
+                            destination['group_username'],
+                            'failed'
+                        )
+            
+            logger.info("✅ Ad posting cycle completed")
+            
         except Exception as e:
-            logger.error(f"Error in process_due_ads: {e}", exc_info=True)
+            logger.error(f"❌ Error in post_scheduled_ads: {e}")
     
     async def run(self):
         """Main scheduler loop."""
-        logger.info("🚀 Ad Scheduler starting...")
+        logger.info("🚀 Starting Ad Scheduler...")
         
         try:
             await self.initialize()
-            logger.info("✅ Scheduler initialized successfully")
             
             while True:
-                try:
-                    logger.info("🔄 Checking for due ads...")
-                    await self.process_due_ads()
-                    
-                    # Wait 60 seconds before next check
-                    logger.info("💤 Sleeping for 60 seconds...")
-                    await asyncio.sleep(60)
-                    
-                except Exception as e:
-                    logger.error(f"Error in scheduler loop: {e}", exc_info=True)
-                    await asyncio.sleep(60)
-                    
+                await self.post_scheduled_ads()
+                
+                # Wait before next cycle (adjust as needed)
+                logger.info("⏳ Waiting 1 hour before next posting cycle...")
+                await asyncio.sleep(3600)  # 1 hour
+                
         except KeyboardInterrupt:
-            logger.info("⏹️ Scheduler stopped by user")
+            logger.info("🛑 Scheduler stopped by user")
         except Exception as e:
-            logger.error(f"Fatal error in scheduler: {e}", exc_info=True)
+            logger.error(f"❌ Scheduler error: {e}")
         finally:
-            # Clean up
+            # Cleanup
             for client in self.worker_clients:
                 await client.disconnect()
-            await self.db.close()
-            logger.info("🛑 Scheduler shut down complete")
+
+async def main():
+    """Main function to run the scheduler."""
+    scheduler = AdScheduler()
+    await scheduler.run()
 
 if __name__ == "__main__":
-    scheduler = AdScheduler()
-    asyncio.run(scheduler.run())
+    asyncio.run(main())
