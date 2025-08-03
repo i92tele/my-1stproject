@@ -2,6 +2,7 @@ import asyncpg
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 import logging
+import asyncio
 
 class DatabaseManager:
     """Handles all database operations for the AutoFarming Bot."""
@@ -14,7 +15,15 @@ class DatabaseManager:
     async def initialize(self):
         """Initializes the database connection pool and creates tables."""
         try:
-            self.pool = await asyncpg.create_pool(self.config.database_url)
+            self.pool = await asyncio.wait_for(
+                asyncpg.create_pool(
+                    self.config.database_url,
+                    min_size=5,
+                    max_size=20,
+                    command_timeout=30.0
+                ),
+                timeout=30.0
+            )
             await self._create_tables()
             self.logger.info("Database initialized successfully with new schema.")
         except Exception as e:
@@ -79,8 +88,25 @@ class DatabaseManager:
             ''')
 
     async def close(self):
+        """Close database connection pool safely."""
         if self.pool:
-            await self.pool.close()
+            try:
+                await asyncio.wait_for(self.pool.close(), timeout=10.0)
+                self.logger.info("Database connection pool closed successfully.")
+            except asyncio.TimeoutError:
+                self.logger.warning("Database close timed out, forcing close...")
+                self.pool.terminate()
+            except Exception as e:
+                self.logger.error(f"Error closing database pool: {e}")
+
+    async def get_connection(self):
+        """Get a database connection with timeout."""
+        try:
+            return await asyncio.wait_for(self.pool.acquire(), timeout=30.0)
+        except asyncio.TimeoutError:
+            raise Exception("Database connection timeout")
+        except Exception as e:
+            raise Exception(f"Database connection error: {e}")
 
     async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Gets user information from the database."""
@@ -328,7 +354,22 @@ class DatabaseManager:
     async def create_payment(self, payment_data: dict) -> bool:
         """Creates a new payment record."""
         try:
+            # Validate required fields
+            required_fields = ['user_id', 'tier', 'cryptocurrency', 'amount_usd', 
+                             'amount_crypto', 'wallet_address', 'expires_at']
+            
+            for field in required_fields:
+                if field not in payment_data:
+                    self.logger.error(f"Missing required field: {field}")
+                    return False
+            
+            # Generate payment_id if not provided
+            if 'payment_id' not in payment_data:
+                import secrets
+                payment_data['payment_id'] = f"{payment_data['cryptocurrency'].upper()}_{secrets.token_urlsafe(8)}"
+            
             async with self.pool.acquire() as conn:
+                # Create payments table if it doesn't exist
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS payments (
                         payment_id VARCHAR(255) PRIMARY KEY,
@@ -347,6 +388,7 @@ class DatabaseManager:
                     )
                 ''')
                 
+                # Insert payment record
                 await conn.execute('''
                     INSERT INTO payments (
                         payment_id, user_id, tier, cryptocurrency, amount_usd, 
@@ -356,18 +398,38 @@ class DatabaseManager:
                 payment_data['payment_id'], payment_data['user_id'], payment_data['tier'],
                 payment_data['cryptocurrency'], payment_data['amount_usd'], 
                 payment_data['amount_crypto'], payment_data['wallet_address'],
-                payment_data['payment_memo'], payment_data['expires_at']
+                payment_data.get('payment_memo', ''), payment_data['expires_at']
                 )
+                
+                self.logger.info(f"Payment created: {payment_data['payment_id']}")
                 return True
+                
         except Exception as e:
             self.logger.error(f"Error creating payment: {e}")
             return False
 
     async def get_payment(self, payment_id: str) -> Optional[Dict[str, Any]]:
-        """Gets payment information by payment ID."""
+        """Gets a payment by ID."""
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM payments WHERE payment_id = $1", payment_id)
+            row = await conn.fetchrow('''
+                SELECT * FROM payments WHERE payment_id = $1
+            ''', payment_id)
             return dict(row) if row else None
+
+    async def get_pending_payments(self) -> List[Dict[str, Any]]:
+        """Gets all pending payments that haven't expired."""
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch('''
+                    SELECT * FROM payments 
+                    WHERE status = 'pending' 
+                    AND expires_at > CURRENT_TIMESTAMP
+                    ORDER BY created_at DESC
+                ''')
+                return [dict(row) for row in rows]
+        except Exception as e:
+            self.logger.error(f"Error getting pending payments: {e}")
+            return []
 
     async def update_payment_status(self, payment_id: str, status: str, tx_hash: str = None) -> bool:
         """Updates payment status."""
@@ -391,28 +453,39 @@ class DatabaseManager:
             return False
 
     async def activate_subscription(self, user_id: int, tier: str, duration_days: int = 30) -> bool:
-        """Activates a user subscription after payment."""
+        """Activates a user subscription."""
         try:
+            # Validate tier
+            valid_tiers = ['basic', 'pro', 'enterprise']
+            if tier not in valid_tiers:
+                self.logger.error(f"Invalid tier: {tier}")
+                return False
+            
+            # Calculate expiration date
+            expires_at = datetime.now() + timedelta(days=duration_days)
+            
             async with self.pool.acquire() as conn:
                 # Update user subscription
                 await conn.execute('''
                     UPDATE users 
-                    SET subscription_tier = $1, subscription_expires = CURRENT_TIMESTAMP + INTERVAL '1 day' * $2
+                    SET subscription_tier = $1, subscription_expires = $2 
                     WHERE user_id = $3
-                ''', tier, duration_days, user_id)
+                ''', tier, expires_at, user_id)
                 
                 # Create ad slots for the user
-                tier_info = self.config.get_tier_info(tier)
-                if tier_info:
-                    num_slots = tier_info.get('ad_slots', 0)
-                    for slot_num in range(1, num_slots + 1):
-                        await conn.execute('''
-                            INSERT INTO ad_slots (user_id, slot_number, is_active)
-                            VALUES ($1, $2, true)
-                            ON CONFLICT (user_id, slot_number) DO UPDATE SET is_active = true
-                        ''', user_id, slot_num)
+                tier_slots = {'basic': 1, 'pro': 3, 'enterprise': 5}
+                num_slots = tier_slots.get(tier, 1)
                 
+                for i in range(1, num_slots + 1):
+                    await conn.execute('''
+                        INSERT INTO ad_slots (user_id, slot_number, is_active)
+                        VALUES ($1, $2, true)
+                        ON CONFLICT (user_id, slot_number) DO UPDATE SET is_active = true
+                    ''', user_id, i)
+                
+                self.logger.info(f"Subscription activated for user {user_id}: {tier}")
                 return True
+                
         except Exception as e:
             self.logger.error(f"Error activating subscription: {e}")
             return False

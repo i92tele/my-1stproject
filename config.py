@@ -16,11 +16,17 @@ class BotConfig:
         self.database_url = os.getenv("DATABASE_URL")
         
         # Cryptocurrency wallets
-        self.btc_address = os.getenv("BTC_ADDRESS")
+        self.btc_address = os.getenv("BTC_ADDRESS", "bc1q9yfsx68yckn9k8yj7q0ufqryqcazfdcyvolegms")
         self.eth_address = os.getenv("ETH_ADDRESS")
         self.sol_address = os.getenv("SOL_ADDRESS")
         self.ltc_address = os.getenv("LTC_ADDRESS")
         self.ton_address = os.getenv("TON_ADDRESS")  # TON wallet address
+        self.usdt_address = os.getenv("USDT_ADDRESS")
+        self.usdc_address = os.getenv("USDC_ADDRESS")
+        self.ada_address = os.getenv("ADA_ADDRESS")
+        self.trx_address = os.getenv("TRX_ADDRESS")
+        self.etherscan_api_key = os.getenv("ETHERSCAN_API_KEY")
+        self.blockcypher_api_key = os.getenv("BLOCKCYPHER_API_KEY")
         
         # Security
         self.encryption_key = os.getenv("ENCRYPTION_KEY")

@@ -14,6 +14,7 @@ from telethon.tl.functions.channels import JoinChannelRequest, GetParticipantReq
 from telethon.errors import InviteRequestSentError, UserPrivacyRestrictedError
 from config import BotConfig
 from database import DatabaseManager
+from typing import List, Dict
 
 # Setup logging
 logging.basicConfig(
@@ -151,7 +152,7 @@ class AdScheduler:
             ad_slots = await self.db.get_active_ad_slots()
             
             if not ad_slots:
-                logger.info("�� No active ad slots found")
+                logger.info("📭 No active ad slots found")
                 return
             
             # Get managed groups
@@ -165,10 +166,12 @@ class AdScheduler:
             
             for ad_slot in ad_slots:
                 # Get destinations for this ad slot
-                destinations = await self.db.get_ad_destinations(ad_slot['id'])
+                destinations = await self.db.get_destinations_for_slot(ad_slot['id'])
                 
                 if not destinations:
                     logger.warning(f"⚠️ No destinations found for ad slot {ad_slot['id']}")
+                    # Try to set default destinations if none exist
+                    await self._set_default_destinations(ad_slot['id'], managed_groups)
                     continue
                 
                 # Get worker for this ad
@@ -182,15 +185,15 @@ class AdScheduler:
                     try:
                         success = await self.send_ad_with_worker(
                             worker_client, 
-                            destination['group_username'], 
-                            ad_slot['content']
+                            destination, 
+                            ad_slot['ad_content']
                         )
                         
                         if success:
                             # Log the post
                             await self.db.log_ad_post(
                                 ad_slot['id'],
-                                destination['group_username'],
+                                destination,
                                 'success'
                             )
                         
@@ -198,10 +201,10 @@ class AdScheduler:
                         await asyncio.sleep(random.randint(30, 60))
                         
                     except Exception as e:
-                        logger.error(f"❌ Error posting to {destination['group_username']}: {e}")
+                        logger.error(f"❌ Error posting to {destination}: {e}")
                         await self.db.log_ad_post(
                             ad_slot['id'],
-                            destination['group_username'],
+                            destination,
                             'failed'
                         )
             
@@ -209,6 +212,19 @@ class AdScheduler:
             
         except Exception as e:
             logger.error(f"❌ Error in post_scheduled_ads: {e}")
+    
+    async def _set_default_destinations(self, slot_id: int, managed_groups: List[Dict]):
+        """Set default destinations for an ad slot if none exist."""
+        try:
+            # Get first 3 managed groups as default destinations
+            default_destinations = [group['group_name'] for group in managed_groups[:3]]
+            
+            if default_destinations:
+                await self.db.update_destinations_for_slot(slot_id, default_destinations)
+                logger.info(f"✅ Set default destinations for slot {slot_id}: {default_destinations}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error setting default destinations for slot {slot_id}: {e}")
     
     async def run(self):
         """Main scheduler loop."""

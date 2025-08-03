@@ -1,6 +1,9 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 import logging
+from datetime import datetime, timedelta
+import secrets
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -246,9 +249,17 @@ async def handle_subscription_callback(update: Update, context: ContextTypes.DEF
     if query.data.startswith("subscribe:"):
         tier = query.data.split(":")[1]
         
-        # Create TON payment button
+        # Create multi-crypto payment buttons
         keyboard = [
-            [InlineKeyboardButton("💎 Pay with TON", callback_data=f"pay:{tier}:ton")],
+            [InlineKeyboardButton("💎 TON", callback_data=f"pay:{tier}:ton")],
+            [InlineKeyboardButton("₿ Bitcoin", callback_data=f"pay:{tier}:btc")],
+            [InlineKeyboardButton("Ξ Ethereum", callback_data=f"pay:{tier}:eth")],
+            [InlineKeyboardButton("◎ Solana", callback_data=f"pay:{tier}:sol")],
+            [InlineKeyboardButton("💵 USDT", callback_data=f"pay:{tier}:usdt")],
+            [InlineKeyboardButton("Ł Litecoin", callback_data=f"pay:{tier}:ltc")],
+            [InlineKeyboardButton("💵 USDC", callback_data=f"pay:{tier}:usdc")],
+            [InlineKeyboardButton("₳ Cardano", callback_data=f"pay:{tier}:ada")],
+            [InlineKeyboardButton("🔗 TRON", callback_data=f"pay:{tier}:trx")],
             [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")]
         ]
         
@@ -281,6 +292,13 @@ async def handle_subscription_callback(update: Update, context: ContextTypes.DEF
     elif query.data.startswith("pay:"):
         _, tier, crypto = query.data.split(":")
         await handle_payment_request(update, context, tier, crypto)
+    elif query.data == "compare_plans":
+        await compare_plans_callback(update, context)
+    elif query.data == "back_to_plans":
+        await subscribe_callback(update, context)
+    elif query.data.startswith("slot_analytics:"):
+        slot_id = query.data.split(":")[1]
+        await slot_analytics_callback(update, context, slot_id)
 
 async def handle_payment_request(update: Update, context: ContextTypes.DEFAULT_TYPE, tier: str, crypto: str):
     """Handle payment request and generate payment details."""
@@ -290,44 +308,132 @@ async def handle_payment_request(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.effective_user.id
     
     try:
-        # Import TON payment processor
-        from ton_payments import TONPaymentProcessor
-        payment_processor = TONPaymentProcessor(context.bot_data['config'], context.bot_data['db'], context.bot_data['logger'])
+        # Get crypto addresses from config
+        config = context.bot_data['config']
+        crypto_addresses = {
+            'ton': config.ton_address,
+            'btc': config.btc_address or "bc1q9yfsx68yckn9k8yj7q0ufqryqcazfdcyvolegms",
+            'eth': config.eth_address,
+            'sol': config.sol_address,
+            'ltc': config.ltc_address,
+            'usdt': config.usdt_address,
+            'usdc': config.usdc_address,
+            'ada': config.ada_address,
+            'trx': config.trx_address
+        }
         
-        # Create payment
-        payment_data = await payment_processor.create_payment(user_id, tier)
+        # Get wallet address for selected crypto
+        wallet_address = crypto_addresses.get(crypto.lower())
+        if not wallet_address:
+            await query.edit_message_text(f"❌ {crypto.upper()} payments are not supported yet. Please use TON.")
+            return
         
-        # Generate QR code
-        qr_image = await payment_processor.generate_payment_qr(payment_data)
+        # Get tier pricing
+        tier_prices = {"basic": 9.99, "pro": 19.99, "enterprise": 29.99}
+        amount_usd = tier_prices.get(tier, 9.99)
         
-        # Create payment message
-        amount_ton = payment_data['amount_crypto']
-        wallet_address = payment_data['wallet_address']
-        payment_memo = payment_data['payment_memo']
+        # Get real-time crypto prices
+        crypto_prices = await get_crypto_prices()
+        crypto_price = crypto_prices.get(crypto.lower(), 1.0)
         
+        # Calculate crypto amount with proper precision
+        if crypto.lower() in ['usdt', 'usdc']:
+            amount_crypto = amount_usd  # Stablecoins use USD amount
+        elif crypto.lower() == 'btc':
+            # For BTC, use more precise calculation
+            amount_crypto = round(amount_usd / crypto_price, 8)
+            # Ensure minimum amount for BTC
+            if amount_crypto < 0.00001:
+                amount_crypto = 0.00001
+        else:
+            amount_crypto = round(amount_usd / crypto_price, 8)  # 8 decimal places for crypto
+        
+        # Create payment message based on crypto
+        crypto_info = {
+            'ton': {'symbol': 'TON', 'emoji': '💎', 'name': 'The Open Network'},
+            'btc': {'symbol': 'BTC', 'emoji': '₿', 'name': 'Bitcoin'},
+            'eth': {'symbol': 'ETH', 'emoji': 'Ξ', 'name': 'Ethereum'},
+            'sol': {'symbol': 'SOL', 'emoji': '◎', 'name': 'Solana'},
+            'ltc': {'symbol': 'LTC', 'emoji': 'Ł', 'name': 'Litecoin'},
+            'usdt': {'symbol': 'USDT', 'emoji': '💵', 'name': 'Tether'},
+            'usdc': {'symbol': 'USDC', 'emoji': '💵', 'name': 'USD Coin'},
+            'ada': {'symbol': 'ADA', 'emoji': '₳', 'name': 'Cardano'},
+            'trx': {'symbol': 'TRX', 'emoji': '🔗', 'name': 'TRON'}
+        }
+        
+        crypto_data = crypto_info.get(crypto.lower(), {'symbol': crypto.upper(), 'emoji': '💎', 'name': crypto.upper()})
+        
+        # Generate payment ID
+        import secrets
+        payment_id = f"{crypto.upper()}_{secrets.token_urlsafe(8)}"
+        
+        # Ensure user exists in database
+        db = context.bot_data['db']
+        user = await db.get_user(user_id)
+        if not user:
+            # Create user if doesn't exist
+            await db.create_user(user_id, update.effective_user.username, update.effective_user.first_name)
+        
+        # Store payment in database
+        payment_data = {
+            'payment_id': payment_id,
+            'user_id': user_id,
+            'tier': tier,
+            'cryptocurrency': crypto.lower(),
+            'amount_usd': amount_usd,
+            'amount_crypto': amount_crypto,
+            'wallet_address': wallet_address,
+            'payment_memo': payment_id,  # Use payment_id as memo
+            'status': 'pending',
+            'created_at': datetime.now(),
+            'expires_at': datetime.now() + timedelta(hours=2)
+        }
+        
+        payment_created = await db.create_payment(payment_data)
+        if not payment_created:
+            await query.edit_message_text("❌ Error creating payment. Please try again later.")
+            return
+        
+        # Generate QR code for payment
+        qr_image = generate_crypto_qr(wallet_address, amount_crypto, crypto.lower(), payment_id)
+        
+        # Format amount with natural numbers
+        if crypto.lower() == 'btc':
+            amount_display = f"{amount_crypto:.8f}".rstrip('0').rstrip('.')
+        else:
+            amount_display = f"{amount_crypto:.6f}".rstrip('0').rstrip('.')
+            
         message_text = (
-            f"💳 **TON Payment Request**\n\n"
+            f"{crypto_data['emoji']} **{crypto_data['name']} Payment Request**\n\n"
             f"**Plan:** {tier.title()}\n"
-            f"**Amount:** {amount_ton} TON\n"
+            f"**Amount:** {amount_display} {crypto_data['symbol']}\n"
             f"**Address:** `{wallet_address}`\n"
-            f"**Memo:** `{payment_memo}`\n\n"
+            f"**Payment ID:** `{payment_id}`\n\n"
             f"⏰ **Expires in 2 hours**\n\n"
-            f"Send the exact amount to the address above with the memo included.\n"
-            f"💡 *Note: ±5% tolerance allowed for market fluctuations*\n"
-            f"Payment will be verified automatically within 30 seconds."
+            f"Send the exact amount to the address above.\n"
+            f"💡 *Note: Payment verification may take 1-5 minutes*\n"
+            f"Contact support if you need help with payment verification."
         )
         
         # Send QR code and payment details
-        await context.bot.send_photo(
-            chat_id=update.effective_chat.id,
-            photo=qr_image,
-            caption=message_text,
-            parse_mode='Markdown'
-        )
+        if qr_image:
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=qr_image,
+                caption=message_text,
+                parse_mode='Markdown'
+            )
+        else:
+            # If QR generation failed, just send text
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=message_text,
+                parse_mode='Markdown'
+            )
         
         # Add payment tracking keyboard
         keyboard = [
-            [InlineKeyboardButton("🔍 Check Payment Status", callback_data=f"check_payment:{payment_data['payment_id']}")],
+            [InlineKeyboardButton("🔍 Check Payment Status", callback_data=f"check_payment:{payment_id}")],
             [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -341,6 +447,113 @@ async def handle_payment_request(update: Update, context: ContextTypes.DEFAULT_T
         context.bot_data['logger'].error(f"Payment creation error: {e}")
         await query.edit_message_text("❌ Error creating payment. Please try again later.")
 
+async def get_crypto_prices():
+    """Get real-time crypto prices from CoinGecko API."""
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            # Get prices for supported cryptos
+            crypto_ids = {
+                'ton': 'the-open-network',
+                'btc': 'bitcoin',
+                'eth': 'ethereum',
+                'sol': 'solana',
+                'ltc': 'litecoin',
+                'usdt': 'tether',
+                'usdc': 'usd-coin',
+                'ada': 'cardano'
+            }
+            
+            ids = ','.join(crypto_ids.values())
+            url = f'https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd'
+            
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return {k: data.get(v, {}).get('usd', 1.0) for k, v in crypto_ids.items()}
+    except Exception as e:
+        print(f"Error getting crypto prices: {e}")
+    
+    # Fallback prices
+    return {
+        'ton': 2.5, 'btc': 45000, 'eth': 3000, 'sol': 100, 'ltc': 150,
+        'usdt': 1.0, 'usdc': 1.0, 'ada': 0.5
+    }
+
+def generate_crypto_qr(address: str, amount: float, crypto: str, payment_id: str = None):
+    """Generate QR code for cryptocurrency payment"""
+    try:
+        # Import qrcode here to avoid issues
+        import qrcode
+        from PIL import Image
+        import io
+        
+        # Generate payment URI based on cryptocurrency
+        if crypto == 'ton':
+            # TON format: ton://transfer/address?amount=amount&text=memo
+            if payment_id:
+                payment_uri = f"ton://transfer/{address}?amount={int(amount * 1000000000)}&text={payment_id}"
+            else:
+                payment_uri = f"ton://transfer/{address}?amount={int(amount * 1000000000)}"
+        elif crypto == 'btc':
+            # Bitcoin QR format: bitcoin:address?amount=amount
+            # Ensure address is clean (remove spaces and special characters)
+            clean_address = address.strip().replace(' ', '').replace('O', '0')
+            # Try different BTC QR formats
+            if amount > 0:
+                amount_str = f"{amount:.8f}".rstrip('0').rstrip('.')
+                payment_uri = f"bitcoin:{clean_address}?amount={amount_str}"
+            else:
+                payment_uri = f"bitcoin:{clean_address}"
+        elif crypto == 'eth':
+            # Use natural number format for ETH
+            eth_amount = int(amount * 1000000000000000000)  # Convert to wei
+            payment_uri = f"ethereum:{address}?value={eth_amount}"
+            if payment_id:
+                payment_uri += f"&label={payment_id}"
+        elif crypto == 'sol':
+            # Solana format
+            sol_amount = int(amount * 1000000000)  # Convert to lamports
+            payment_uri = f"solana:{address}?amount={sol_amount}"
+        elif crypto == 'ltc':
+            # Litecoin format
+            ltc_amount = f"{amount:.8f}".rstrip('0').rstrip('.')
+            payment_uri = f"litecoin:{address}?amount={ltc_amount}"
+        elif crypto in ['usdt', 'usdc']:
+            # For stablecoins, use ETH format with token contract
+            eth_amount = int(amount * 1000000000000000000)  # Convert to wei
+            payment_uri = f"ethereum:{address}?value={eth_amount}"
+        elif crypto == 'ada':
+            # Cardano format
+            ada_amount = int(amount * 1000000)  # Convert to lovelace
+            payment_uri = f"cardano:{address}?amount={ada_amount}"
+        elif crypto == 'trx':
+            # TRON format
+            trx_amount = int(amount * 1000000)  # Convert to sun
+            payment_uri = f"tron:{address}?amount={trx_amount}"
+        else:
+            # Default format
+            payment_uri = f"{crypto}:{address}?amount={amount}"
+        
+        # Generate QR code
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(payment_uri)
+        qr.make(fit=True)
+        
+        # Create image
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Convert to bytes for Telegram
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
+        
+        return buffer
+        
+    except Exception as e:
+        print(f"Error generating QR code: {e}")
+        return None
+
 async def check_payment_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check payment status."""
     query = update.callback_query
@@ -350,10 +563,25 @@ async def check_payment_status(update: Update, context: ContextTypes.DEFAULT_TYP
         payment_id = query.data.split(":")[1]
         
         try:
-            from ton_payments import TONPaymentProcessor
-            payment_processor = TONPaymentProcessor(context.bot_data['config'], context.bot_data['db'], context.bot_data['logger'])
+            # Get payment from database
+            db = context.bot_data['db']
+            payment = await db.get_payment(payment_id)
             
-            status = await payment_processor.check_payment_status(payment_id)
+            if not payment:
+                await query.edit_message_text("❌ Payment not found. Please try again.")
+                return
+            
+            # Use the new multi-crypto payment processor
+            from multi_crypto_payments import MultiCryptoPaymentProcessor
+            payment_processor = MultiCryptoPaymentProcessor(context.bot_data['config'], context.bot_data['db'], context.bot_data['logger'])
+            
+            # Verify payment on blockchain
+            is_verified = await payment_processor.verify_payment_on_blockchain(payment)
+            
+            if is_verified:
+                status = {'status': 'completed', 'message': 'Payment verified on blockchain'}
+            else:
+                status = {'status': 'pending', 'message': 'Payment not yet detected on blockchain'}
             
             if status['status'] == 'completed':
                 await query.edit_message_text(
@@ -856,11 +1084,14 @@ async def subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "• 5 ad slots\n"
         "• Advanced analytics\n"
         "• Priority support\n"
-        "• Custom scheduling\n\n"
+        "• Custom scheduling\n"
+        "• Ban protection\n\n"
         "Enterprise Plan - $99.99/month\n"
         "• 15 ad slots\n"
         "• Full analytics suite\n"
-        "• 24/7 support\n\n"
+        "• 24/7 support\n"
+        "• Auto-renewal\n"
+        "• Premium features\n\n"
         "Payment via TON cryptocurrency only."
     )
     
@@ -920,3 +1151,168 @@ async def start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(welcome_text, reply_markup=reply_markup)
+
+async def compare_plans_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show detailed plan comparison."""
+    query = update.callback_query
+    await query.answer()
+    
+    comparison_text = (
+        "📊 **Plan Comparison**\n\n"
+        "🥉 **Basic Plan - $9.99/month**\n"
+        "• 1 ad slot\n"
+        "• Basic analytics\n"
+        "• Email support\n"
+        "• Standard posting\n\n"
+        "🥈 **Pro Plan - $19.99/month**\n"
+        "• 3 ad slots\n"
+        "• Advanced analytics\n"
+        "• Priority support\n"
+        "• Custom scheduling\n"
+        "• Ban protection\n\n"
+        "🥇 **Enterprise Plan - $29.99/month**\n"
+        "• 5 ad slots\n"
+        "• Full analytics suite\n"
+        "• 24/7 support\n"
+        "• Auto-renewal\n"
+        "• Premium features\n\n"
+        "💡 *All plans include 30-day duration and TON payment*"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("💎 Subscribe Now", callback_data="cmd:subscribe")],
+        [InlineKeyboardButton("🔙 Back to Plans", callback_data="cmd:subscribe")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(comparison_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+async def slot_analytics_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, slot_id: str):
+    """Show analytics for a specific ad slot."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        db = context.bot_data['db']
+        user_id = update.effective_user.id
+        
+        # Get slot info
+        slot = await db.get_ad_slot(int(slot_id))
+        if not slot or slot['user_id'] != user_id:
+            await query.edit_message_text("❌ Ad slot not found or access denied.")
+            return
+        
+        # Get analytics data (placeholder for now)
+        analytics_text = (
+            f"📊 **Ad Slot Analytics**\n\n"
+            f"**Slot ID:** {slot_id}\n"
+            f"**Status:** {'🟢 Active' if slot.get('is_active') else '🔴 Inactive'}\n"
+            f"**Created:** {slot.get('created_at', 'N/A')}\n\n"
+            f"**Performance:**\n"
+            f"• Posts sent: {slot.get('posts_sent', 0)}\n"
+            f"• Success rate: {slot.get('success_rate', 0)}%\n"
+            f"• Last posted: {slot.get('last_posted', 'Never')}\n\n"
+            f"*Detailed analytics coming soon!*"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Back to Slot", callback_data=f"manage_slot:{slot_id}")],
+            [InlineKeyboardButton("📋 All Slots", callback_data="cmd:my_ads")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(analytics_text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+    except Exception as e:
+        context.bot_data['logger'].error(f"Slot analytics error: {e}")
+        await query.edit_message_text("❌ Error loading analytics. Please try again.")
+
+def escape_markdown(text: str) -> str:
+    """Escape special characters for Markdown parsing."""
+    chars_to_escape = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in chars_to_escape:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+def split_long_message(text: str, max_length: int = 4000) -> List[str]:
+    """Split long messages to avoid Telegram's 4096 character limit."""
+    if len(text) <= max_length:
+        return [text]
+    
+    messages = []
+    
+    # If text is just a long string without paragraphs, split by character count
+    if '\n\n' not in text:
+        for i in range(0, len(text), max_length):
+            messages.append(text[i:i + max_length])
+        return messages
+    
+    # Split by paragraphs first
+    paragraphs = text.split('\n\n')
+    current_message = ""
+    
+    for paragraph in paragraphs:
+        # If adding this paragraph would exceed limit
+        if len(current_message) + len(paragraph) + 2 > max_length:
+            if current_message:
+                messages.append(current_message.strip())
+                current_message = paragraph
+            else:
+                # Single paragraph is too long, split by sentences
+                sentences = paragraph.split('. ')
+                for sentence in sentences:
+                    if len(current_message) + len(sentence) + 2 > max_length:
+                        if current_message:
+                            messages.append(current_message.strip())
+                            current_message = sentence
+                        else:
+                            # Single sentence is too long, split by words
+                            words = sentence.split(' ')
+                            for word in words:
+                                if len(current_message) + len(word) + 1 > max_length:
+                                    if current_message:
+                                        messages.append(current_message.strip())
+                                        current_message = word
+                                    else:
+                                        # Single word is too long, truncate
+                                        messages.append(word[:max_length])
+                                else:
+                                    current_message += " " + word if current_message else word
+                    else:
+                        current_message += ". " + sentence if current_message else sentence
+        else:
+            current_message += "\n\n" + paragraph if current_message else paragraph
+    
+    if current_message:
+        messages.append(current_message.strip())
+    
+    return messages
+
+async def safe_send_message(update, message_text: str, reply_markup=None, parse_mode='MarkdownV2'):
+    """Safely send message with proper length handling and parse mode."""
+    try:
+        # Escape markdown characters
+        escaped_text = escape_markdown(message_text)
+        
+        # Split long messages
+        messages = split_long_message(escaped_text)
+        
+        # Send first message with reply markup
+        if messages:
+            await update.message.reply_text(
+                messages[0], 
+                reply_markup=reply_markup, 
+                parse_mode=parse_mode
+            )
+            
+            # Send remaining messages without markup
+            for message in messages[1:]:
+                await update.message.reply_text(message, parse_mode=parse_mode)
+                
+    except Exception as e:
+        logger.error(f"Error sending message: {e}")
+        # Fallback to plain text
+        await update.message.reply_text(
+            "❌ Error formatting message. Please try again.",
+            reply_markup=reply_markup
+        )
