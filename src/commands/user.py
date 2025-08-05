@@ -4,6 +4,7 @@ from datetime import datetime
 from ..decorators import rate_limit
 from ..core_systems import safe_rate_limit, safe_error_handling
 from ..ui_manager import get_ui_manager
+from ..payment_processor import get_payment_processor
 
 @safe_error_handling
 @safe_rate_limit("start_command")
@@ -57,18 +58,41 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @safe_error_handling
 @safe_rate_limit("subscribe_command")
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Subscribe command - show subscription plans."""
+    """Subscribe command - show subscription plans with payment buttons."""
     ui_manager = get_ui_manager()
     if ui_manager:
         await ui_manager.show_subscribe_menu(update, context)
     else:
-        # Fallback subscription menu
+        # Enhanced subscription menu with payment buttons
         keyboard = [
-            [InlineKeyboardButton("Basic - $15/month", callback_data="subscribe_basic")],
-            [InlineKeyboardButton("Pro - $30/month", callback_data="subscribe_pro")],
-            [InlineKeyboardButton("Enterprise - $50/month", callback_data="subscribe_enterprise")]
+            [
+                InlineKeyboardButton("💎 Basic - $15", callback_data="pay:basic"),
+                InlineKeyboardButton("💎 Pro - $45", callback_data="pay:pro")
+            ],
+            [
+                InlineKeyboardButton("💎 Enterprise - $75", callback_data="pay:enterprise")
+            ],
+            [
+                InlineKeyboardButton("📊 Check Status", callback_data="menu_status"),
+                InlineKeyboardButton("🔙 Back", callback_data="menu_main")
+            ]
         ]
-        text = "💎 **Subscription Plans**\n\nChoose a plan:"
+        text = (
+            "💎 **Subscription Plans**\n\n"
+            "**Basic Plan** - $15/month\n"
+            "• 1 ad slot\n"
+            "• 10 destinations per slot\n"
+            "• 30-day subscription\n\n"
+            "**Pro Plan** - $45/month\n"
+            "• 3 ad slots\n"
+            "• 10 destinations per slot\n"
+            "• 30-day subscription\n\n"
+            "**Enterprise Plan** - $75/month\n"
+            "• 5 ad slots\n"
+            "• 10 destinations per slot\n"
+            "• 30-day subscription\n\n"
+            "💳 **Payment via TON cryptocurrency**"
+        )
         message = update.callback_query.message if update.callback_query else update.message
         if update.callback_query:
             await update.callback_query.answer()
@@ -339,3 +363,215 @@ async def save_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     context.user_data.clear()
     return ConversationHandler.END
+
+# Payment-related functions
+@safe_error_handling
+@safe_rate_limit("payment_callback")
+async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle payment button clicks."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    if data.startswith("pay:"):
+        tier = data.replace("pay:", "")
+        await show_payment_options(update, context, tier)
+    elif data.startswith("check_payment:"):
+        payment_id = data.replace("check_payment:", "")
+        await check_payment_status(update, context, payment_id)
+    else:
+        await query.edit_message_text("❌ Invalid payment callback")
+
+@safe_error_handling
+@safe_rate_limit("show_payment_options")
+async def show_payment_options(update: Update, context: ContextTypes.DEFAULT_TYPE, tier: str = None):
+    """Show TON payment options for selected tier."""
+    if not tier:
+        # Extract tier from callback data if called from callback
+        query = update.callback_query
+        if query and query.data.startswith("pay:"):
+            tier = query.data.replace("pay:", "")
+        else:
+            await update.message.reply_text("❌ No tier specified")
+            return
+    
+    user_id = update.effective_user.id
+    
+    # Get payment processor
+    payment_processor = get_payment_processor()
+    if not payment_processor:
+        await update.message.reply_text("❌ Payment system not available")
+        return
+    
+    try:
+        # Create payment request
+        payment_request = await payment_processor.create_payment_request(
+            user_id=user_id,
+            tier=tier,
+            amount_usd=15 if tier == 'basic' else (45 if tier == 'pro' else 75)
+        )
+        
+        if payment_request.get('success') is False:
+            await update.message.reply_text(f"❌ Error creating payment: {payment_request.get('error')}")
+            return
+        
+        # Create payment keyboard
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    f"💳 Pay {payment_request['amount_ton']} TON", 
+                    url=payment_request['payment_url']
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔄 Check Payment Status", 
+                    callback_data=f"check_payment:{payment_request['payment_id']}"
+                )
+            ],
+            [
+                InlineKeyboardButton("📊 My Status", callback_data="menu_status"),
+                InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")
+            ]
+        ]
+        
+        text = (
+            f"💳 **TON Payment for {tier.title()} Plan**\n\n"
+            f"**Amount:** {payment_request['amount_ton']} TON (${payment_request['amount_usd']})\n"
+            f"**Payment ID:** `{payment_request['payment_id']}`\n"
+            f"**Expires:** {payment_request['expires_at']}\n\n"
+            f"**Instructions:**\n"
+            f"1. Click the payment button below\n"
+            f"2. Complete the TON transfer\n"
+            f"3. Click 'Check Payment Status' to verify\n\n"
+            f"⏰ **Payment expires in 30 minutes**"
+        )
+        
+        message = update.callback_query.message if update.callback_query else update.message
+        if update.callback_query:
+            await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        else:
+            await message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error creating payment: {str(e)}")
+
+@safe_error_handling
+@safe_rate_limit("check_payment_status")
+async def check_payment_status(update: Update, context: ContextTypes.DEFAULT_TYPE, payment_id: str = None):
+    """Check if payment has been completed."""
+    if not payment_id:
+        # Extract payment ID from callback data if called from callback
+        query = update.callback_query
+        if query and query.data.startswith("check_payment:"):
+            payment_id = query.data.replace("check_payment:", "")
+        else:
+            await update.message.reply_text("❌ No payment ID specified")
+            return
+    
+    # Get payment processor
+    payment_processor = get_payment_processor()
+    if not payment_processor:
+        await update.message.reply_text("❌ Payment system not available")
+        return
+    
+    try:
+        # Get payment status
+        status = await payment_processor.get_payment_status(payment_id)
+        
+        if not status['success']:
+            await update.message.reply_text(f"❌ Error checking payment: {status.get('error')}")
+            return
+        
+        payment = status['payment']
+        
+        if payment['status'] == 'completed':
+            # Payment already completed
+            keyboard = [
+                [InlineKeyboardButton("📊 My Status", callback_data="menu_status")],
+                [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+            ]
+            text = (
+                "✅ **Payment Completed!**\n\n"
+                f"Your subscription has been activated.\n"
+                f"Payment ID: `{payment_id}`\n\n"
+                "You can now use your ad slots."
+            )
+        elif payment['status'] == 'pending':
+            # Check if payment has been received
+            verification = await payment_processor.verify_payment(payment_id)
+            
+            if verification.get('payment_verified'):
+                # Process the payment
+                result = await payment_processor.process_successful_payment(payment_id)
+                
+                if result['success']:
+                    keyboard = [
+                        [InlineKeyboardButton("📊 My Status", callback_data="menu_status")],
+                        [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+                    ]
+                    text = (
+                        "🎉 **Payment Verified!**\n\n"
+                        f"✅ Subscription activated: **{result['tier'].title()}**\n"
+                        f"📊 Ad slots: {result['slots']}\n"
+                        f"Payment ID: `{payment_id}`\n\n"
+                        "You can now create and manage your ad slots."
+                    )
+                else:
+                    keyboard = [
+                        [InlineKeyboardButton("🔄 Check Again", callback_data=f"check_payment:{payment_id}")],
+                        [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+                    ]
+                    text = (
+                        "❌ **Payment Processing Failed**\n\n"
+                        f"Payment was received but activation failed.\n"
+                        f"Error: {result.get('error', 'Unknown error')}\n\n"
+                        "Please contact support."
+                    )
+            else:
+                # Payment not yet received
+                keyboard = [
+                    [InlineKeyboardButton("🔄 Check Again", callback_data=f"check_payment:{payment_id}")],
+                    [InlineKeyboardButton("💳 Pay Again", callback_data=f"pay:{payment.get('tier', 'basic')}")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+                ]
+                text = (
+                    "⏳ **Payment Pending**\n\n"
+                    f"Payment ID: `{payment_id}`\n"
+                    f"Amount: {payment['amount']} {payment['currency']}\n"
+                    f"Status: {payment['status']}\n\n"
+                    "Please complete the TON transfer and check again."
+                )
+        elif payment['status'] == 'expired':
+            keyboard = [
+                [InlineKeyboardButton("💳 Create New Payment", callback_data=f"pay:{payment.get('tier', 'basic')}")],
+                [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+            ]
+            text = (
+                "⏰ **Payment Expired**\n\n"
+                f"Payment ID: `{payment_id}`\n"
+                f"Status: {payment['status']}\n\n"
+                "Please create a new payment request."
+            )
+        else:
+            keyboard = [
+                [InlineKeyboardButton("💳 Create New Payment", callback_data=f"pay:{payment.get('tier', 'basic')}")],
+                [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+            ]
+            text = (
+                f"❓ **Payment Status: {payment['status']}**\n\n"
+                f"Payment ID: `{payment_id}`\n"
+                f"Amount: {payment['amount']} {payment['currency']}\n\n"
+                "Please contact support for assistance."
+            )
+        
+        message = update.callback_query.message if update.callback_query else update.message
+        if update.callback_query:
+            await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        else:
+            await message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error checking payment: {str(e)}")
+
+# Legacy methods for backward compatibility

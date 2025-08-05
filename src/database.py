@@ -86,6 +86,64 @@ class DatabaseManager:
                     )
                 ''')
 
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS worker_cooldowns (
+                        worker_id INTEGER PRIMARY KEY,
+                        last_used_at TIMESTAMP,
+                        is_active BOOLEAN DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS worker_activity_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        worker_id INTEGER,
+                        chat_id INTEGER,
+                        success BOOLEAN,
+                        error TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (worker_id) REFERENCES worker_cooldowns(worker_id)
+                    )
+                ''')
+
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS worker_bans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        worker_id INTEGER,
+                        chat_id INTEGER,
+                        banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (worker_id) REFERENCES worker_cooldowns(worker_id)
+                    )
+                ''')
+
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS managed_groups (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        group_id TEXT UNIQUE,
+                        group_name TEXT,
+                        category TEXT,
+                        is_active BOOLEAN DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS ad_posts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        slot_id INTEGER,
+                        destination_id TEXT,
+                        destination_name TEXT,
+                        worker_id INTEGER,
+                        success BOOLEAN,
+                        error TEXT,
+                        posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (slot_id) REFERENCES ad_slots(id),
+                        FOREIGN KEY (worker_id) REFERENCES worker_cooldowns(worker_id)
+                    )
+                ''')
+
                 conn.commit()
                 conn.close()
                 self.logger.info("Database initialized successfully")
@@ -580,3 +638,284 @@ class DatabaseManager:
                     'messages_today': 0,
                     'revenue_this_month': 0.0
                 }
+
+    async def get_active_ads_to_send(self) -> List[Dict[str, Any]]:
+        """Get active ad slots that are due for posting."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # Get active slots that are due for posting
+                cursor.execute('''
+                    SELECT s.*, u.username 
+                    FROM ad_slots s
+                    JOIN users u ON s.user_id = u.user_id
+                    WHERE s.is_active = 1 
+                    AND s.content IS NOT NULL 
+                    AND s.content != ''
+                    AND (
+                        s.last_sent_at IS NULL 
+                        OR datetime('now') >= datetime(s.last_sent_at, '+' || s.interval_minutes || ' minutes')
+                    )
+                    ORDER BY s.last_sent_at ASC NULLS FIRST
+                ''')
+                
+                slots = [dict(row) for row in cursor.fetchall()]
+                conn.close()
+                return slots
+                
+            except Exception as e:
+                self.logger.error(f"Error getting active ads to send: {e}")
+                return []
+
+    async def update_slot_last_sent(self, slot_id: int) -> bool:
+        """Update the last_sent_at timestamp for a slot."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE ad_slots 
+                    SET last_sent_at = ?, updated_at = ?
+                    WHERE id = ?
+                ''', (datetime.now(), datetime.now(), slot_id))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                self.logger.error(f"Error updating slot last sent: {e}")
+                return False
+
+    async def log_ad_post(self, slot_id: int, destination_id: str, destination_name: str, 
+                          worker_id: int, success: bool, error: str = None) -> bool:
+        """Log an ad post attempt."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO ad_posts (slot_id, destination_id, destination_name, worker_id, success, error)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (slot_id, destination_id, destination_name, worker_id, success, error))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                self.logger.error(f"Error logging ad post: {e}")
+                return False
+
+    async def get_managed_groups(self, category: str = None) -> List[Dict[str, Any]]:
+        """Get managed groups, optionally filtered by category."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                if category:
+                    cursor.execute('''
+                        SELECT * FROM managed_groups 
+                        WHERE category = ? AND is_active = 1
+                        ORDER BY group_name
+                    ''', (category,))
+                else:
+                    cursor.execute('''
+                        SELECT * FROM managed_groups 
+                        WHERE is_active = 1
+                        ORDER BY category, group_name
+                    ''')
+                
+                groups = [dict(row) for row in cursor.fetchall()]
+                conn.close()
+                return groups
+            except Exception as e:
+                self.logger.error(f"Error getting managed groups: {e}")
+                return []
+
+    async def add_managed_group(self, group_id: str, group_name: str, category: str) -> bool:
+        """Add a managed group."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO managed_groups (group_id, group_name, category)
+                    VALUES (?, ?, ?)
+                ''', (group_id, group_name, category))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                self.logger.error(f"Error adding managed group: {e}")
+                return False
+
+    async def remove_managed_group(self, group_name: str) -> bool:
+        """Remove a managed group."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM managed_groups WHERE group_name = ?
+                ''', (group_name,))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                self.logger.error(f"Error removing managed group: {e}")
+                return False
+
+    async def activate_subscription(self, user_id: int, tier: str, duration_days: int = 30) -> bool:
+        """Activate or extend user subscription."""
+        async with self._lock:
+            try:
+                # Get current subscription
+                current_sub = await self.get_user_subscription(user_id)
+                
+                # Calculate new expiry date
+                if current_sub and current_sub['is_active']:
+                    # Extend existing subscription
+                    current_expiry = datetime.fromisoformat(current_sub['expires'])
+                    new_expiry = current_expiry + timedelta(days=duration_days)
+                else:
+                    # Start new subscription
+                    new_expiry = datetime.now() + timedelta(days=duration_days)
+                
+                # Update subscription
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users 
+                    SET subscription_tier = ?, subscription_expires = ?, updated_at = ?
+                    WHERE user_id = ?
+                ''', (tier, new_expiry, datetime.now(), user_id))
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"✅ Activated {tier} subscription for user {user_id} until {new_expiry}")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Error activating subscription: {e}")
+                return False
+
+    async def close(self):
+        """Close database connections."""
+        # SQLite doesn't need explicit connection closing
+        pass
+
+    async def get_connection(self):
+        """Get a database connection."""
+        return sqlite3.connect(self.db_path)
+
+    async def create_worker_cooldowns_table(self):
+        """Creates the worker_cooldowns table if it doesn't exist."""
+        # This table is already created in the initialize method
+        pass
+
+
+    # --- Methods merged from PostgreSQL database ---
+
+    async def _create_tables(self, *args, **kwargs):
+        """_create_tables - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method _create_tables not yet implemented for SQLite")
+        return None
+
+    async def create_user(self, *args, **kwargs):
+        """create_user - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method create_user not yet implemented for SQLite")
+        return None
+
+    async def get_user_ad_slots(self, *args, **kwargs):
+        """get_user_ad_slots - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method get_user_ad_slots not yet implemented for SQLite")
+        return None
+
+    async def get_or_create_ad_slots(self, *args, **kwargs):
+        """get_or_create_ad_slots - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method get_or_create_ad_slots not yet implemented for SQLite")
+        return None
+
+    async def get_ad_slot_by_id(self, *args, **kwargs):
+        """get_ad_slot_by_id - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method get_ad_slot_by_id not yet implemented for SQLite")
+        return None
+
+    async def update_ad_slot_content(self, *args, **kwargs):
+        """update_ad_slot_content - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method update_ad_slot_content not yet implemented for SQLite")
+        return None
+
+    async def update_ad_slot_schedule(self, *args, **kwargs):
+        """update_ad_slot_schedule - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method update_ad_slot_schedule not yet implemented for SQLite")
+        return None
+
+    async def update_ad_slot_status(self, *args, **kwargs):
+        """update_ad_slot_status - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method update_ad_slot_status not yet implemented for SQLite")
+        return None
+
+    async def get_destinations_for_slot(self, *args, **kwargs):
+        """get_destinations_for_slot - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method get_destinations_for_slot not yet implemented for SQLite")
+        return None
+
+    async def update_destinations_for_slot(self, *args, **kwargs):
+        """update_destinations_for_slot - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method update_destinations_for_slot not yet implemented for SQLite")
+        return None
+
+    async def get_bot_statistics(self, *args, **kwargs):
+        """get_bot_statistics - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method get_bot_statistics not yet implemented for SQLite")
+        return None
+
+    async def update_ad_last_sent(self, *args, **kwargs):
+        """update_ad_last_sent - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method update_ad_last_sent not yet implemented for SQLite")
+        return None
+
+    async def create_payment(self, *args, **kwargs):
+        """create_payment - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method create_payment not yet implemented for SQLite")
+        return None
+
+    async def get_expired_subscriptions(self, *args, **kwargs):
+        """get_expired_subscriptions - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method get_expired_subscriptions not yet implemented for SQLite")
+        return None
+
+    async def deactivate_expired_subscriptions(self, *args, **kwargs):
+        """deactivate_expired_subscriptions - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method deactivate_expired_subscriptions not yet implemented for SQLite")
+        return None
+
+    async def get_active_ad_slots(self, *args, **kwargs):
+        """get_active_ad_slots - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method get_active_ad_slots not yet implemented for SQLite")
+        return None
+
+    async def get_ad_destinations(self, *args, **kwargs):
+        """get_ad_destinations - merged from PostgreSQL database."""
+        # TODO: Implement this method for SQLite
+        self.logger.warning(f"Method get_ad_destinations not yet implemented for SQLite")
+        return None
