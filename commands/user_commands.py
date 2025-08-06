@@ -14,11 +14,36 @@ SETTING_AD_DESTINATIONS = 2
 
 # --- Basic Commands ---
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Welcome message when user starts the bot."""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Welcome message when user starts the bot.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with database and configuration
+        
+    Returns:
+        None
+    """
     try:
         user = update.effective_user
-        db = context.bot_data['db']
+        if not user:
+            logger.error("No effective user in update")
+            await update.message.reply_text("❌ Error: Could not identify user")
+            return
+            
+        db = context.bot_data.get('db')
+        if not db:
+            logger.error("Database not available in context")
+            await update.message.reply_text("❌ Error: Database not available")
+            return
+        
+        # Create or update user in database
+        await db.create_or_update_user(
+            user_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name
+        )
         
         # Get user subscription info
         subscription = await db.get_user_subscription(user.id)
@@ -31,11 +56,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'days_left': max(0, days_left)
             }
         
-        # Create professional welcome message
-        from enhanced_ui import EnhancedUI
-        welcome_text = EnhancedUI.create_welcome_message(user.first_name, subscription_info)
+        # Create welcome message
+        welcome_text = f"🤖 *Welcome to AutoFarming Bot, {user.first_name}!*\n\n"
+        welcome_text += "I'm here to help you manage your automated advertising campaigns.\n\n"
         
-        # Create enhanced keyboard
+        if subscription_info:
+            welcome_text += f"📊 *Your Subscription:* {subscription_info['tier'].title()}\n"
+            welcome_text += f"⏰ *Days Remaining:* {subscription_info['days_left']}\n\n"
+        else:
+            welcome_text += "💎 *No active subscription*\n\n"
+        
+        welcome_text += "Use the buttons below to get started:"
+        
+        # Create keyboard
         keyboard = [
             [
                 InlineKeyboardButton("📊 Analytics", callback_data="cmd:analytics"),
@@ -52,152 +85,194 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        logger.info(f"User {user.id} started the bot successfully")
         
     except Exception as e:
-        logger.error(f"Error in start command: {e}")
+        logger.error(f"Error in start command for user {update.effective_user.id if update.effective_user else 'unknown'}: {e}")
         error_message = "❌ Sorry, something went wrong. Please try again or contact support."
         await update.message.reply_text(error_message)
 
-async def handle_command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle command button callbacks."""
-    query = update.callback_query
-    await query.answer()
+async def handle_command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle command button callbacks.
     
-    command = query.data.split(":")[1]
-    
-    if command == "analytics":
-        await analytics_command_callback(update, context)
-    elif command == "referral":
-        await referral_command_callback(update, context)
-    elif command == "subscribe":
-        await subscribe_callback(update, context)
-    elif command == "my_ads":
-        await my_ads_command(update, context)
-    elif command == "help":
-        await help_command_callback(update, context)
-    elif command == "start":
-        await start_callback(update, context)
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shows help information."""
-    help_text = (
-        "📚 *Available Commands:*\n\n"
-        "/start \\- Welcome message with buttons\n"
-        "/my\\_ads \\- Manage your ad campaigns\n"
-        "/analytics \\- View your ad performance\n"
-        "/referral \\- Get your referral code\n"
-        "/subscribe \\- View subscription plans\n"
-        "/help \\- Show this help message"
-    )
-    
-    # Create inline keyboard for quick access
-    keyboard = [
-        [InlineKeyboardButton("📊 Analytics", callback_data="cmd:analytics")],
-        [InlineKeyboardButton("🎁 Referral Program", callback_data="cmd:referral")],
-        [InlineKeyboardButton("💎 Subscribe", callback_data="cmd:subscribe")],
-        [InlineKeyboardButton("📋 My Ads", callback_data="cmd:my_ads")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(help_text, parse_mode='MarkdownV2', reply_markup=reply_markup)
-
-async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user analytics and performance metrics."""
-    db = context.bot_data['db']
-    user_id = update.effective_user.id
-    
-    # Check if user has active subscription
-    subscription = await db.get_user_subscription(user_id)
-    if not subscription or not subscription['is_active']:
-        await update.message.reply_text(
-            "❌ You need an active subscription to view analytics.\n\n"
-            "Use /subscribe to get started!"
-        )
-        return
-    
+    Args:
+        update: Telegram update object
+        context: Bot context with database and configuration
+        
+    Returns:
+        None
+    """
     try:
-        from analytics import AnalyticsEngine
-        analytics = AnalyticsEngine(db, context.bot_data['logger'])
+        query = update.callback_query
+        if not query:
+            logger.error("No callback query in update")
+            return
+            
+        await query.answer()
         
-        # Get user analytics
-        stats = await analytics.get_user_analytics(user_id, days=30)
+        if not query.data or ":" not in query.data:
+            logger.error(f"Invalid callback data: {query.data}")
+            await query.edit_message_text("❌ Invalid command")
+            return
+            
+        command = query.data.split(":")[1]
         
-        if not stats:
-            await update.message.reply_text("❌ No analytics data available yet.")
+        # Route to appropriate handler
+        if command == "analytics":
+            await analytics_command_callback(update, context)
+        elif command == "referral":
+            await referral_command_callback(update, context)
+        elif command == "subscribe":
+            await subscribe_callback(update, context)
+        elif command == "my_ads":
+            await my_ads_command(update, context)
+        elif command == "help":
+            await help_command_callback(update, context)
+        elif command == "start":
+            await start_callback(update, context)
+        else:
+            logger.warning(f"Unknown command: {command}")
+            await query.edit_message_text("❌ Unknown command")
+            
+    except Exception as e:
+        logger.error(f"Error in handle_command_callback: {e}")
+        try:
+            await update.callback_query.edit_message_text("❌ An error occurred. Please try again.")
+        except:
+            pass
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Shows help information.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context
+        
+    Returns:
+        None
+    """
+    try:
+        help_text = (
+            "📚 *Available Commands:*\n\n"
+            "/start \\- Welcome message with buttons\n"
+            "/my\\_ads \\- Manage your ad campaigns\n"
+            "/analytics \\- View your ad performance\n"
+            "/referral \\- Get your referral code\n"
+            "/subscribe \\- View subscription plans\n"
+            "/help \\- Show this help message"
+        )
+        
+        await update.message.reply_text(help_text, parse_mode='MarkdownV2')
+        logger.info(f"Help command executed by user {update.effective_user.id if update.effective_user else 'unknown'}")
+        
+    except Exception as e:
+        logger.error(f"Error in help_command: {e}")
+        await update.message.reply_text("❌ Error displaying help. Please try again.")
+    
+async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show user analytics and performance metrics.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
+    """
+    try:
+        user = update.effective_user
+        if not user:
+            await update.message.reply_text("❌ Could not identify user")
+            return
+            
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
+        user_id = user.id
+        
+        # Check if user has active subscription
+        subscription = await db.get_user_subscription(user_id)
+        if not subscription or not subscription.get('is_active'):
+            await update.message.reply_text(
+                "❌ You need an active subscription to view analytics.\n\n"
+                "Use /subscribe to get started!"
+            )
             return
         
-        # Create analytics message
-        message = f"""
-📊 **Your Analytics (Last 30 Days)**
+        # Get user slots for basic analytics
+        slots = await db.get_user_slots(user_id)
+        if not slots:
+            await update.message.reply_text("❌ No ad slots found. Create some ads first!")
+            return
+        
+        # Create basic analytics message
+        total_slots = len(slots)
+        active_slots = sum(1 for slot in slots if slot.get('is_active'))
+        total_destinations = sum(len(slot.get('destinations', [])) for slot in slots)
+        
+        message = f"""📊 **Your Analytics**
 
-📈 **Performance:**
-• Total Posts: {stats.get('total_posts', 0)}
-• Successful Posts: {stats.get('successful_posts', 0)}
-• Success Rate: {stats.get('success_rate', 0)}%
+🎯 **Ad Slots:** {total_slots} total, {active_slots} active
+📍 **Destinations:** {total_destinations} total
+⏰ **Subscription:** {subscription.get('tier', 'Unknown').title()}
+📅 **Expires:** {subscription.get('expires', 'Unknown')}
 
-🎯 **Reach:**
-• Estimated Reach: {stats.get('estimated_reach', 0):,} people
-• Active Ad Slots: {stats.get('active_slots', 0)}/{stats.get('ad_slots', 0)}
-
-💰 **ROI:**
-• Subscription Cost: ${stats.get('subscription_cost', 0)}
-• Estimated Revenue: ${stats.get('estimated_revenue', 0):.2f}
-• ROI: {stats.get('roi_percentage', 0)}%
-
-⏰ **Subscription:**
-• Days Remaining: {stats.get('days_remaining', 0)}
-"""
+*More detailed analytics coming soon!*"""
         
         await update.message.reply_text(message, parse_mode='Markdown')
+        logger.info(f"Analytics displayed for user {user_id}")
         
     except Exception as e:
-        context.bot_data['logger'].error(f"Analytics error: {e}")
-        await update.message.reply_text("❌ Error loading analytics. Please try again later.")
+        logger.error(f"Error in analytics_command for user {update.effective_user.id if update.effective_user else 'unknown'}: {e}")
+        await update.message.reply_text("❌ Error loading analytics. Please try again.")
 
-async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's referral code and statistics."""
-    db = context.bot_data['db']
-    user_id = update.effective_user.id
+async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show user's referral code and statistics.
     
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
+    """
     try:
-        from referral_system import ReferralSystem
-        referral_system = ReferralSystem(db, context.bot_data['logger'])
+        user = update.effective_user
+        if not user:
+            await update.message.reply_text("❌ Could not identify user")
+            return
+            
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
+        user_id = user.id
         
-        # Get or create referral code
-        referral_code = await referral_system.get_user_referral_code(user_id)
-        if not referral_code:
-            referral_code = await referral_system.create_referral_code(user_id)
-        
-        # Get referral statistics
-        stats = await referral_system.get_referral_stats(user_id)
+        # Generate simple referral code (user_id based)
+        referral_code = f"REF{user_id:06d}"
         
         # Create referral message
-        message = f"""
-🎁 **Your Referral Program**
+        message = f"""🎁 **Your Referral Program**
 
-🔗 **Your Referral Code:**
-`{referral_code}`
+🔗 **Your Referral Code:** `{referral_code}`
+👥 **Share this code with friends!**
 
-📊 **Statistics:**
-• Total Referrals: {stats.get('total_referrals', 0)}
-• Pending Referrals: {stats.get('pending_referrals', 0)}
-• Rewards Earned: {stats.get('rewards_earned', 0)}
+**How it works:**
+• Friends use your code when subscribing
+• You both get bonus features
+• Earn rewards for successful referrals
 
-💎 **How It Works:**
-• Share your referral code with friends
-• When they subscribe, you both get rewards
-• You get 7 days free subscription
-• They get 50% discount on first month
-
-📱 **Share this message:**
-"Join AutoFarming Bot with my referral code: {referral_code}"
-"""
+*Referral statistics coming soon!*"""
         
         await update.message.reply_text(message, parse_mode='Markdown')
+        logger.info(f"Referral command executed by user {user_id}")
         
     except Exception as e:
-        context.bot_data['logger'].error(f"Referral error: {e}")
-        await update.message.reply_text("❌ Error loading referral information. Please try again later.")
+        logger.error(f"Error in referral_command for user {update.effective_user.id if update.effective_user else 'unknown'}: {e}")
+        await update.message.reply_text("❌ Error loading referral info. Please try again.")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows subscription plans with enhanced UI and competitive pricing."""

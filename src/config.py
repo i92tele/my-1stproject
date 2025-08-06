@@ -1,6 +1,10 @@
 import os
 import json
 from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables from config/.env
+load_dotenv('config/.env')
 
 class BotConfig:
     """Bot configuration management."""

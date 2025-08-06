@@ -1,6 +1,6 @@
 {
-  "timestamp": "2025-08-04T17:34:59.813679",
-  "overall_status": "HEALTHY",
+  "timestamp": "2025-08-06T16:13:14.685019",
+  "overall_status": "WARNING",
   "checks": {
     "environment_variables": {
       "status": "PASS",
@@ -13,15 +13,34 @@
     "dependencies": {
       "status": "PASS",
       "missing_required": [],
-      "missing_optional": [],
+      "missing_optional": [
+        "redis",
+        "cryptography"
+      ],
       "issues": [],
       "fixes": []
     },
     "imports": {
-      "status": "PASS",
-      "failed_imports": [],
-      "issues": [],
-      "fixes": []
+      "status": "FAIL",
+      "failed_imports": [
+        [
+          "multi_crypto_payments",
+          "No module named 'multi_crypto_payments'"
+        ],
+        [
+          "fix_worker_system",
+          "No module named 'fix_worker_system'"
+        ]
+      ],
+      "issues": [
+        "Failed to import multi_crypto_payments: No module named 'multi_crypto_payments'",
+        "Failed to import fix_worker_system: No module named 'fix_worker_system'"
+      ],
+      "fixes": [
+        "Check file paths and ensure all modules exist",
+        "Verify __init__.py files in package directories",
+        "Check for syntax errors in imported modules"
+      ]
     },
     "database": {
       "status": "PASS",
@@ -59,7 +78,9 @@
   },
   "issues": [],
   "fixes": [],
-  "warnings": [],
-  "success_count": 9,
+  "warnings": [
+    "Missing optional packages: redis, cryptography"
+  ],
+  "success_count": 8,
   "total_checks": 9
 }

@@ -31,7 +31,6 @@ async def post_init(application: Application):
     # Initialize database right after bot is ready
     await application.bot_data['db'].initialize()
 
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Logs errors and notifies the admin."""
     LOGGER.error("Exception while handling an update:", exc_info=context.error)
@@ -39,12 +38,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         await context.bot_data['error_logger'].notify(context.error)
 
 async def main() -> None:
-    """Initializes and runs the bot."""
+    """Initializes and runs the bot with proper async handling."""
     # --- Build Application ---
     config = BotConfig.load_from_env()
     app = ApplicationBuilder().token(config.bot_token).post_init(post_init).build()
 
-    # --- Initialize Components now that the event loop is running ---
+    # --- Initialize Components ---
     db = DatabaseManager("bot_database.db", LOGGER)
     notifier = NotificationManager(app.bot, LOGGER)
     payments = BlockchainPaymentProcessor(db, notifier, config, LOGGER)
@@ -92,14 +91,24 @@ async def main() -> None:
     app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, forwarder.handle_edited_message))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forwarder.handle_message))
 
-    # --- Run the Bot ---
+    # --- Run the Bot with proper async lifecycle ---
+    LOGGER.info("Bot is starting...")
+    
     try:
-        LOGGER.info("Bot is starting...")
-        await payments.start_monitoring()
-        await app.run_polling()
+        # Use run_polling which handles all lifecycle internally
+        await app.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query", "edited_message"]
+        )
+    except KeyboardInterrupt:
+        LOGGER.info("Bot stopped by user")
+    except Exception as e:
+        LOGGER.error(f"Bot error: {e}")
+        raise
     finally:
-        await payments.stop_monitoring()
+        LOGGER.info("Bot shutdown complete")
 
+# Only run if this file is executed directly (not imported)
 if __name__ == '__main__':
     # --- Load Config and Logger at the start ---
     load_dotenv('config/.env')
@@ -113,6 +122,7 @@ if __name__ == '__main__':
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
+    # Only run asyncio.run() if this file is executed directly
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):

@@ -1,0 +1,14 @@
+[Unit]
+Description=AutoFarming Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/my-1stproject
+ExecStart=/root/my-1stproject/start_bot.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

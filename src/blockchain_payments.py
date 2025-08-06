@@ -87,9 +87,17 @@ class BlockchainPaymentProcessor:
                         tier_info = self.config.subscription_tiers[payment['tier']]
                         await self.db.update_subscription(user_id=payment['user_id'], tier=payment['tier'], duration_days=tier_info['duration_days'])
                         await self.notifier.notify_payment_success(payment['user_id'], payment['tier'])
+            except asyncio.CancelledError:
+                self.logger.info("Payment monitoring cancelled")
+                break
             except Exception as e:
                 self.logger.error(f"Error in payment monitoring loop: {e}")
-            await asyncio.sleep(120)
+            
+            # Sleep for 2 minutes before next check
+            try:
+                await asyncio.sleep(120)
+            except asyncio.CancelledError:
+                break
 
     async def _monitor_expiring_subscriptions(self):
         """Periodically check for subscriptions that are about to expire."""
@@ -100,23 +108,42 @@ class BlockchainPaymentProcessor:
                     for sub in expiring_soon:
                         self.logger.info(f"Notifying user {sub['user_id']} about subscription expiring in {days} days.")
                         await self.notifier.notify_subscription_expiring(sub['user_id'], days)
+            except asyncio.CancelledError:
+                self.logger.info("Subscription monitoring cancelled")
+                break
             except Exception as e:
                 self.logger.error(f"Error in subscription expiry monitoring loop: {e}")
-            await asyncio.sleep(86400)
+            
+            # Sleep for 24 hours before next check
+            try:
+                await asyncio.sleep(86400)
+            except asyncio.CancelledError:
+                break
 
     async def start_monitoring(self):
         """Start all background monitoring tasks."""
-        if not self.monitoring_task or self.monitoring_task.done():
-            self.monitoring_task = asyncio.gather(
-                self._monitor_pending_payments(),
-                self._monitor_expiring_subscriptions()
-            )
-            self.logger.info("All background monitors started.")
+        try:
+            if not self.monitoring_task or self.monitoring_task.done():
+                self.monitoring_task = asyncio.gather(
+                    self._monitor_pending_payments(),
+                    self._monitor_expiring_subscriptions(),
+                    return_exceptions=True
+                )
+                self.logger.info("All background monitors started.")
+        except Exception as e:
+            self.logger.error(f"Failed to start monitoring: {e}")
 
     async def stop_monitoring(self):
         """Stop the background monitoring task."""
-        if self.monitoring_task:
-            self.monitoring_task.cancel()
-        if self.session and not self.session.closed:
-            await self.session.close()
-        self.logger.info("All background monitors stopped.")
+        try:
+            if self.monitoring_task and not self.monitoring_task.done():
+                self.monitoring_task.cancel()
+                try:
+                    await self.monitoring_task
+                except asyncio.CancelledError:
+                    pass
+            if self.session and not self.session.closed:
+                await self.session.close()
+            self.logger.info("All background monitors stopped.")
+        except Exception as e:
+            self.logger.error(f"Error stopping monitoring: {e}")

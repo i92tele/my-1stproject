@@ -6,13 +6,55 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 async def check_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if the user is an admin."""
-    config = context.bot_data['config']
-    user_id = update.effective_user.id
-    return config.is_admin(user_id)
+    """Check if the user is an admin.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with configuration
+        
+    Returns:
+        True if user is admin, False otherwise
+    """
+    try:
+        config = context.bot_data.get('config')
+        if not config:
+            logger.error("Config not available in context")
+            return False
+            
+        user = update.effective_user
+        if not user:
+            logger.error("No effective user in update")
+            return False
+            
+        user_id = user.id
+        is_admin = config.is_admin(user_id)
+        
+        if is_admin:
+            logger.info(f"Admin access granted to user {user_id}")
+        else:
+            logger.warning(f"Admin access denied to user {user_id}")
+            
+        return is_admin
+        
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        return False
 
-async def add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add a new group to the managed groups list."""
+async def add_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Add a new group to the managed groups list.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
+    """
+    # Check admin permissions
+    if not await check_admin(update, context):
+        await update.message.reply_text("❌ Access denied. Admin privileges required.")
+        return
+    
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
             "Usage: /add_group <group_id> <group_name> [category]\n"
@@ -25,11 +67,21 @@ async def add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_name = context.args[1]
         category = context.args[2] if len(context.args) > 2 else "general"
         
-        db = context.bot_data['db']
+        # Validate group_id format
+        if not group_id.startswith('-100'):
+            await update.message.reply_text("❌ Invalid group ID. Must start with '-100'")
+            return
+        
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
         success = await db.add_managed_group(group_id, group_name, category)
         
         if success:
             await update.message.reply_text(f"✅ Group '{group_name}' added successfully!")
+            logger.info(f"Admin {update.effective_user.id} added group '{group_name}'")
         else:
             await update.message.reply_text("❌ Failed to add group. Please try again.")
             
@@ -37,10 +89,27 @@ async def add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error adding group: {e}")
         await update.message.reply_text("❌ Error adding group. Please check the format.")
 
-async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all managed groups."""
+async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all managed groups.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
+    """
+    # Check admin permissions
+    if not await check_admin(update, context):
+        await update.message.reply_text("❌ Access denied. Admin privileges required.")
+        return
+    
     try:
-        db = context.bot_data['db']
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
         groups = await db.get_managed_groups()
         
         if not groups:
@@ -55,13 +124,27 @@ async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"• Status: {'✅ Active' if group['is_active'] else '❌ Inactive'}\n\n"
         
         await update.message.reply_text(text, parse_mode='Markdown')
+        logger.info(f"Admin {update.effective_user.id} listed managed groups")
         
     except Exception as e:
         logger.error(f"Error listing groups: {e}")
         await update.message.reply_text("❌ Error listing groups.")
 
-async def remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Remove a group from the managed groups list."""
+async def remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove a group from the managed groups list.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
+    """
+    # Check admin permissions
+    if not await check_admin(update, context):
+        await update.message.reply_text("❌ Access denied. Admin privileges required.")
+        return
+    
     if not context.args:
         await update.message.reply_text(
             "Usage: /remove_group <group_name>\n"
@@ -71,11 +154,17 @@ async def remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         group_name = " ".join(context.args)
-        db = context.bot_data['db']
+        
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
         success = await db.remove_managed_group(group_name)
         
         if success:
             await update.message.reply_text(f"✅ Group '{group_name}' removed successfully!")
+            logger.info(f"Admin {update.effective_user.id} removed group '{group_name}'")
         else:
             await update.message.reply_text("❌ Failed to remove group. Please check the name.")
             
@@ -83,19 +172,37 @@ async def remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error removing group: {e}")
         await update.message.reply_text("❌ Error removing group.")
 
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show admin statistics."""
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show admin statistics.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
+    """
+    # Check admin permissions
+    if not await check_admin(update, context):
+        await update.message.reply_text("❌ Access denied. Admin privileges required.")
+        return
+    
     try:
-        db = context.bot_data['db']
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
         stats = await db.get_stats()
         
         text = "📊 **Admin Statistics:**\n\n"
-        text += f"👥 **Users:** {stats['total_users']}\n"
-        text += f"💎 **Active Subscriptions:** {stats['active_subscriptions']}\n"
-        text += f"📨 **Messages Today:** {stats['messages_today']}\n"
-        text += f"💰 **Revenue This Month:** ${stats['revenue_this_month']:.2f}\n"
+        text += f"👥 **Users:** {stats.get('total_users', 0)}\n"
+        text += f"💎 **Active Subscriptions:** {stats.get('active_subscriptions', 0)}\n"
+        text += f"📨 **Messages Today:** {stats.get('messages_today', 0)}\n"
+        text += f"💰 **Revenue This Month:** ${stats.get('revenue_this_month', 0):.2f}\n"
         
         await update.message.reply_text(text, parse_mode='Markdown')
+        logger.info(f"Admin {update.effective_user.id} viewed statistics")
         
     except Exception as e:
         logger.error(f"Error getting admin stats: {e}")

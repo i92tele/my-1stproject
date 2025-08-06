@@ -1,113 +1,423 @@
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from functools import wraps
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-def admin_only(func):
-    """Decorator to restrict command to admin only."""
-    @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def check_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if the user is an admin.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with configuration
+        
+    Returns:
+        True if user is admin, False otherwise
+    """
+    try:
         config = context.bot_data.get('config')
         if not config:
-            await update.message.reply_text("? Bot configuration error")
-            return
+            logger.error("Config not available in context")
+            return False
             
-        user_id = update.effective_user.id
-        if not config.is_admin(user_id):
-            await update.message.reply_text("? This command is for administrators only.")
-            return
+        user = update.effective_user
+        if not user:
+            logger.error("No effective user in update")
+            return False
             
-        return await func(update, context)
-    return wrapper
+        user_id = user.id
+        is_admin = config.is_admin(user_id)
+        
+        if is_admin:
+            logger.info(f"Admin access granted to user {user_id}")
+        else:
+            logger.warning(f"Admin access denied to user {user_id}")
+            
+        return is_admin
+        
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        return False
 
-@admin_only
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show admin panel."""
-    admin_dashboard = context.bot_data['admin']
-    await admin_dashboard.show_dashboard(update, context)
-
-@admin_only
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Broadcast message to all users."""
-    if not context.args:
-        await update.message.reply_text("Usage: /broadcast <message>")
-        return
+async def add_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Add a new group to the managed groups list.
     
-    message = ' '.join(context.args)
-    db = context.bot_data['db']
-    
-    # Get all users
-    users = await db.get_all_users()
-    
-    success_count = 0
-    fail_count = 0
-    
-    await update.message.reply_text(f"?? Broadcasting to {len(users)} users...")
-    
-    for user in users:
-        try:
-            await context.bot.send_message(
-                chat_id=user['user_id'],
-                text=f"?? **Broadcast Message:**\n\n{message}",
-                parse_mode='Markdown'
-            )
-            success_count += 1
-        except Exception as e:
-            fail_count += 1
-            logger.error(f"Failed to send to {user['user_id']}: {e}")
-    
-    await update.message.reply_text(
-        f"? Broadcast complete!\n"
-        f"Success: {success_count}\n"
-        f"Failed: {fail_count}"
-    )
-
-@admin_only
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show bot statistics."""
-    db = context.bot_data['db']
-    stats = await db.get_stats()
-    
-    stats_text = f"""
-?? **Bot Statistics:**
-
-?? Total Users: {stats['total_users']}
-? Active Subscriptions: {stats['active_subscriptions']}
-?? Messages Today: {stats['messages_today']}
-?? Revenue This Month: ${stats['revenue_this_month']:.2f}
-
-?? Bot Status: ? Running
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
     """
-    
-    await update.message.reply_text(stats_text, parse_mode='Markdown')
-
-async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle admin panel callbacks."""
-    query = update.callback_query
-    data = query.data
-    
-    config = context.bot_data['config']
-    if not config.is_admin(update.effective_user.id):
-        await query.answer("Unauthorized", show_alert=True)
+    # Check admin permissions
+    if not await check_admin(update, context):
+        await update.message.reply_text("❌ Access denied. Admin privileges required.")
         return
     
-    admin_dashboard = context.bot_data['admin']
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /add_group <group_id> <group_name> [category]\n"
+            "Example: /add_group -1001234567890 'My Group' general"
+        )
+        return
     
-    # Route to appropriate admin function
-    if data == "admin:dashboard":
-        await admin_dashboard.show_dashboard(update, context)
-    elif data == "admin:users":
-        await admin_dashboard.user_management(update, context)
-    elif data == "admin:revenue":
-        await admin_dashboard.revenue_analytics(update, context)
-    elif data == "admin:security":
-        await admin_dashboard.security_center(update, context)
-    elif data == "admin:broadcast":
-        await admin_dashboard.broadcast_center(update, context)
-    elif data == "admin:refresh":
-        await admin_dashboard.show_dashboard(update, context)
-        await query.answer("Dashboard refreshed!")
-    else:
-        await query.answer("Function not implemented yet")
+    try:
+        group_id = context.args[0]
+        group_name = context.args[1]
+        category = context.args[2] if len(context.args) > 2 else "general"
+        
+        # Validate group_id format
+        if not group_id.startswith('-100'):
+            await update.message.reply_text("❌ Invalid group ID. Must start with '-100'")
+            return
+        
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
+        success = await db.add_managed_group(group_id, group_name, category)
+        
+        if success:
+            await update.message.reply_text(f"✅ Group '{group_name}' added successfully!")
+            logger.info(f"Admin {update.effective_user.id} added group '{group_name}'")
+        else:
+            await update.message.reply_text("❌ Failed to add group. Please try again.")
+            
+    except Exception as e:
+        logger.error(f"Error adding group: {e}")
+        await update.message.reply_text("❌ Error adding group. Please check the format.")
+
+async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all managed groups.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
+    """
+    # Check admin permissions
+    if not await check_admin(update, context):
+        await update.message.reply_text("❌ Access denied. Admin privileges required.")
+        return
+    
+    try:
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
+        groups = await db.get_managed_groups()
+        
+        if not groups:
+            await update.message.reply_text("📋 No managed groups found.")
+            return
+        
+        text = "📋 **Managed Groups:**\n\n"
+        for group in groups:
+            text += f"**{group['group_name']}**\n"
+            text += f"• ID: `{group['group_id']}`\n"
+            text += f"• Category: {group['category']}\n"
+            text += f"• Status: {'✅ Active' if group['is_active'] else '❌ Inactive'}\n\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
+        logger.info(f"Admin {update.effective_user.id} listed managed groups")
+        
+    except Exception as e:
+        logger.error(f"Error listing groups: {e}")
+        await update.message.reply_text("❌ Error listing groups.")
+
+async def remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove a group from the managed groups list.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
+    """
+    # Check admin permissions
+    if not await check_admin(update, context):
+        await update.message.reply_text("❌ Access denied. Admin privileges required.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /remove_group <group_name>\n"
+            "Example: /remove_group 'My Group'"
+        )
+        return
+    
+    try:
+        group_name = " ".join(context.args)
+        
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
+        success = await db.remove_managed_group(group_name)
+        
+        if success:
+            await update.message.reply_text(f"✅ Group '{group_name}' removed successfully!")
+            logger.info(f"Admin {update.effective_user.id} removed group '{group_name}'")
+        else:
+            await update.message.reply_text("❌ Failed to remove group. Please check the name.")
+            
+    except Exception as e:
+        logger.error(f"Error removing group: {e}")
+        await update.message.reply_text("❌ Error removing group.")
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show admin statistics.
+    
+    Args:
+        update: Telegram update object
+        context: Bot context with database
+        
+    Returns:
+        None
+    """
+    # Check admin permissions
+    if not await check_admin(update, context):
+        await update.message.reply_text("❌ Access denied. Admin privileges required.")
+        return
+    
+    try:
+        db = context.bot_data.get('db')
+        if not db:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
+        stats = await db.get_stats()
+        
+        text = "📊 **Admin Statistics:**\n\n"
+        text += f"👥 **Users:** {stats.get('total_users', 0)}\n"
+        text += f"💎 **Active Subscriptions:** {stats.get('active_subscriptions', 0)}\n"
+        text += f"📨 **Messages Today:** {stats.get('messages_today', 0)}\n"
+        text += f"💰 **Revenue This Month:** ${stats.get('revenue_this_month', 0):.2f}\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
+        logger.info(f"Admin {update.effective_user.id} viewed statistics")
+        
+    except Exception as e:
+        logger.error(f"Error getting admin stats: {e}")
+        await update.message.reply_text("❌ Error getting statistics.")
+
+async def posting_service_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show posting service status."""
+    try:
+        posting_service = context.bot_data.get('posting_service')
+        if not posting_service:
+            await update.message.reply_text("❌ Posting service not available.")
+            return
+        
+        status = await posting_service.get_service_status()
+        
+        if 'error' in status:
+            await update.message.reply_text(f"❌ Error getting service status: {status['error']}")
+            return
+        
+        service_status = status['service_status']
+        statistics = status['statistics']
+        components = status['components']
+        
+        text = "🤖 **Posting Service Status:**\n\n"
+        
+        # Service status
+        text += f"🔄 **Status:** {'✅ Running' if service_status['is_running'] else '❌ Stopped'}\n"
+        if service_status['uptime']:
+            text += f"⏱️ **Uptime:** {service_status['uptime']}\n"
+        if service_status['last_posting_cycle']:
+            text += f"📤 **Last Cycle:** {service_status['last_posting_cycle']}\n"
+        if service_status['last_cleanup']:
+            text += f"🧹 **Last Cleanup:** {service_status['last_cleanup']}\n"
+        
+        text += f"⏰ **Cycle Interval:** {service_status['posting_cycle_interval']} minutes\n\n"
+        
+        # Statistics
+        text += "📊 **Statistics:**\n"
+        text += f"• Total Posts Sent: {statistics['total_posts_sent']}\n"
+        text += f"• Total Posts Failed: {statistics['total_posts_failed']}\n"
+        text += f"• Pending Ads: {statistics['pending_ads_count']}\n"
+        text += f"• Total Cycles: {statistics['cycle_stats']['total_cycles']}\n"
+        text += f"• Last Cycle Duration: {statistics['cycle_stats']['last_cycle_duration']:.1f}s\n"
+        text += f"• Expired Subscriptions Cleaned: {statistics['cycle_stats']['expired_subscriptions_cleaned']}\n\n"
+        
+        # Components
+        text += "🔧 **Components:**\n"
+        text += f"• Worker Manager: {'✅ Available' if components['worker_manager'] else '❌ Not Available'}\n"
+        text += f"• Auto Poster: {'✅ Available' if components['auto_poster'] else '❌ Not Available'}\n"
+        text += f"• Payment Processor: {components['payment_processor']}\n"
+        
+        # Anti-ban config
+        anti_ban = status['anti_ban_config']
+        text += f"\n🛡️ **Anti-Ban Config:**\n"
+        text += f"• Min Delay: {anti_ban['min_delay']}s\n"
+        text += f"• Max Delay: {anti_ban['max_delay']}s\n"
+        text += f"• Max Posts/Cycle: {anti_ban['max_posts_per_cycle']}\n"
+        
+        # Add control buttons
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Restart Service", callback_data="admin:restart_posting"),
+                InlineKeyboardButton("⏸️ Pause Service", callback_data="admin:pause_posting")
+            ],
+            [
+                InlineKeyboardButton("📊 Detailed Stats", callback_data="admin:detailed_stats"),
+                InlineKeyboardButton("⚙️ Config", callback_data="admin:service_config")
+            ]
+        ]
+        
+        await update.message.reply_text(
+            text, 
+            reply_markup=InlineKeyboardMarkup(keyboard), 
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting posting service status: {e}")
+        await update.message.reply_text("❌ Error getting service status.")
+
+async def restart_posting_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Restart the posting service."""
+    try:
+        posting_service = context.bot_data.get('posting_service')
+        if not posting_service:
+            await update.callback_query.answer("❌ Posting service not available.")
+            return
+        
+        await update.callback_query.answer("🔄 Restarting posting service...")
+        
+        # Restart the service
+        await posting_service.restart_service()
+        
+        await update.callback_query.edit_message_text(
+            "✅ Posting service restarted successfully!"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error restarting posting service: {e}")
+        await update.callback_query.answer("❌ Error restarting service.")
+
+async def pause_posting_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pause the posting service."""
+    try:
+        posting_service = context.bot_data.get('posting_service')
+        if not posting_service:
+            await update.callback_query.answer("❌ Posting service not available.")
+            return
+        
+        if not posting_service.is_running:
+            await update.callback_query.answer("⏸️ Service is already paused.")
+            return
+        
+        await update.callback_query.answer("⏸️ Pausing posting service...")
+        
+        # Stop the service
+        await posting_service.stop_service()
+        
+        await update.callback_query.edit_message_text(
+            "⏸️ Posting service paused successfully!"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error pausing posting service: {e}")
+        await update.callback_query.answer("❌ Error pausing service.")
+
+async def verify_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Verify a payment manually."""
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /verify_payment <payment_id>\n"
+            "Example: /verify_payment TON_abc123def456"
+        )
+        return
+    
+    try:
+        payment_id = context.args[0]
+        payment_processor = context.bot_data.get('payment_processor')
+        
+        if not payment_processor:
+            await update.message.reply_text("❌ Payment processor not available.")
+            return
+        
+        # Verify the payment
+        verification = await payment_processor.verify_payment(payment_id)
+        
+        if verification.get('payment_verified'):
+            # Process the payment
+            result = await payment_processor.process_successful_payment(payment_id)
+            
+            if result['success']:
+                await update.message.reply_text(
+                    f"✅ Payment verified and processed!\n"
+                    f"User: {result['user_id']}\n"
+                    f"Tier: {result['tier']}\n"
+                    f"Slots: {result['slots']}"
+                )
+            else:
+                await update.message.reply_text(f"❌ Payment verification failed: {result.get('error')}")
+        else:
+            await update.message.reply_text("❌ Payment not verified. Please check the payment ID.")
+            
+    except Exception as e:
+        logger.error(f"Error verifying payment: {e}")
+        await update.message.reply_text("❌ Error verifying payment.")
+
+async def revenue_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show revenue statistics."""
+    try:
+        db = context.bot_data['db']
+        
+        # Get all completed payments
+        # Note: This would need to be implemented in the database manager
+        # For now, show a placeholder
+        text = "💰 **Revenue Statistics:**\n\n"
+        text += "📊 Revenue tracking coming soon!\n"
+        text += "This will show:\n"
+        text += "• Total revenue\n"
+        text += "• Revenue by period\n"
+        text += "• Revenue by plan\n"
+        text += "• Payment success rates\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Error getting revenue stats: {e}")
+        await update.message.reply_text("❌ Error getting revenue statistics.")
+
+async def pending_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show pending payments."""
+    try:
+        db = context.bot_data['db']
+        payment_processor = context.bot_data.get('payment_processor')
+        
+        if not payment_processor:
+            await update.message.reply_text("❌ Payment processor not available.")
+            return
+        
+        # Get pending payments
+        pending_payments = await db.get_pending_payments(30)  # Last 30 minutes
+        
+        if not pending_payments:
+            await update.message.reply_text("📋 No pending payments found.")
+            return
+        
+        text = "⏳ **Pending Payments:**\n\n"
+        for payment in pending_payments:
+            text += f"**Payment ID:** `{payment['payment_id']}`\n"
+            text += f"**User:** {payment['user_id']}\n"
+            text += f"**Amount:** {payment['amount']} {payment['currency']}\n"
+            text += f"**Created:** {payment['created_at']}\n"
+            text += f"**Expires:** {payment['expires_at']}\n\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Error getting pending payments: {e}")
+        await update.message.reply_text("❌ Error getting pending payments.")

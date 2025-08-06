@@ -4,20 +4,44 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
 class DatabaseManager:
-    """Handle all database operations."""
+    """Database manager for AutoFarming Bot.
+    
+    Handles all SQLite database operations including users, subscriptions,
+    ad slots, payments, and analytics with proper error handling and logging.
+    """
 
     def __init__(self, db_path: str, logger):
+        """Initialize database manager.
+        
+        Args:
+            db_path: Path to SQLite database file
+            logger: Logger instance for error logging
+        """
         self.db_path = db_path
         self.logger = logger
         self._lock = asyncio.Lock()
 
-    async def initialize(self):
-        """Initialize database with required tables."""
+    async def initialize(self) -> None:
+        """Initialize database with required tables.
+        
+        Creates all necessary tables if they don't exist:
+        - users: User information and subscriptions
+        - ad_slots: Advertising slot management
+        - slot_destinations: Destinations for each ad slot
+        - payments: Payment tracking
+        - message_stats: Message analytics
+        - worker_cooldowns: Worker account management
+        - worker_activity_log: Worker activity tracking
+        
+        Raises:
+            Exception: If database initialization fails
+        """
         async with self._lock:
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
 
+                # Create users table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id INTEGER PRIMARY KEY,
@@ -31,6 +55,7 @@ class DatabaseManager:
                     )
                 ''')
 
+                # Create ad_slots table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS ad_slots (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,6 +71,7 @@ class DatabaseManager:
                     )
                 ''')
 
+                # Create slot_destinations table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS slot_destinations (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,6 +86,7 @@ class DatabaseManager:
                     )
                 ''')
 
+                # Create payments table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS payments (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +103,7 @@ class DatabaseManager:
                     )
                 ''')
 
+                # Create message_stats table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS message_stats (
                         user_id INTEGER,
@@ -86,6 +114,7 @@ class DatabaseManager:
                     )
                 ''')
 
+                # Create worker_cooldowns table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS worker_cooldowns (
                         worker_id INTEGER PRIMARY KEY,
@@ -96,6 +125,7 @@ class DatabaseManager:
                     )
                 ''')
 
+                # Create worker_activity_log table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS worker_activity_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,19 +183,54 @@ class DatabaseManager:
                 raise
 
     async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Get user information."""
+        """Get user information by user ID.
+        
+        Args:
+            user_id: Telegram user ID
+            
+        Returns:
+            User information dict or None if user not found
+            
+        Raises:
+            Exception: If database operation fails
+        """
+        if not user_id or user_id <= 0:
+            self.logger.warning(f"Invalid user_id: {user_id}")
+            return None
+            
         async with self._lock:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-            row = cursor.fetchone()
-            conn.close()
-            return dict(row) if row else None
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+                conn.close()
+                return dict(row) if row else None
+            except Exception as e:
+                self.logger.error(f"Error getting user {user_id}: {e}")
+                return None
 
     async def create_or_update_user(self, user_id: int, username: str = None, 
                                   first_name: str = None, last_name: str = None) -> bool:
-        """Create or update user record."""
+        """Create or update user record.
+        
+        Args:
+            user_id: Telegram user ID
+            username: Telegram username (optional)
+            first_name: User's first name (optional)
+            last_name: User's last name (optional)
+            
+        Returns:
+            True if successful, False otherwise
+            
+        Raises:
+            Exception: If database operation fails
+        """
+        if not user_id or user_id <= 0:
+            self.logger.warning(f"Invalid user_id: {user_id}")
+            return False
+            
         async with self._lock:
             try:
                 conn = sqlite3.connect(self.db_path)
@@ -176,9 +241,10 @@ class DatabaseManager:
                 ''', (user_id, username, first_name, last_name, datetime.now()))
                 conn.commit()
                 conn.close()
+                self.logger.info(f"User {user_id} created/updated successfully")
                 return True
             except Exception as e:
-                self.logger.error(f"Error creating/updating user: {e}")
+                self.logger.error(f"Error creating/updating user {user_id}: {e}")
                 return False
 
     async def get_user_subscription(self, user_id: int) -> Optional[Dict[str, Any]]:
@@ -909,10 +975,52 @@ class DatabaseManager:
         return None
 
     async def get_active_ad_slots(self, *args, **kwargs):
-        """get_active_ad_slots - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method get_active_ad_slots not yet implemented for SQLite")
-        return None
+        """Get active ad slots with their destinations."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # Get active ad slots with their destinations
+                cursor.execute('''
+                    SELECT 
+                        ads.id,
+                        ads.user_id,
+                        ads.slot_number,
+                        ads.content,
+                        ads.file_id,
+                        ads.interval_minutes,
+                        ads.last_sent_at,
+                        ads.created_at,
+                        GROUP_CONCAT(sd.destination_id) as destinations,
+                        GROUP_CONCAT(sd.destination_name) as destination_names
+                    FROM ad_slots ads
+                    LEFT JOIN slot_destinations sd ON ads.id = sd.slot_id AND sd.is_active = 1
+                    WHERE ads.is_active = 1
+                    GROUP BY ads.id
+                ''')
+                
+                slots = []
+                for row in cursor.fetchall():
+                    slot_data = dict(row)
+                    # Parse destinations
+                    if slot_data['destinations']:
+                        slot_data['destinations'] = slot_data['destinations'].split(',')
+                        slot_data['destination_names'] = slot_data['destination_names'].split(',')
+                    else:
+                        slot_data['destinations'] = []
+                        slot_data['destination_names'] = []
+                    
+                    slots.append(slot_data)
+                
+                conn.close()
+                self.logger.info(f"Found {len(slots)} active ad slots")
+                return slots
+                
+            except Exception as e:
+                self.logger.error(f"Error getting active ad slots: {e}")
+                return []
 
     async def get_ad_destinations(self, *args, **kwargs):
         """get_ad_destinations - merged from PostgreSQL database."""
