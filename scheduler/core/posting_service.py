@@ -70,7 +70,8 @@ class PostingService:
 
             # Load destinations for this slot
             try:
-                slot_dests = await self.database.get_slot_destinations(slot_id)
+                slot_type = ad_slot.get('slot_type', 'user')
+                slot_dests = await self.database.get_slot_destinations(slot_id, slot_type)
             except Exception as e:
                 error_msg = f"Failed to load destinations for slot {slot_id}: {e}"
                 results['errors'].append(error_msg)
@@ -119,7 +120,8 @@ class PostingService:
             # Update last_sent_at once per slot after finishing all destinations
             if posted_any:
                 try:
-                    await self.database.update_slot_last_sent(slot_id)
+                    slot_type = ad_slot.get('slot_type', 'user')
+                    await self.database.update_slot_last_sent(slot_id, slot_type)
                 except Exception as e:
                     logger.error(f"Failed updating last_sent_at for slot {slot_id}: {e}")
         
@@ -174,48 +176,72 @@ class PostingService:
                 error_text = str(send_error).lower()
                 logger.info(f"Strategy 1 failed: {error_text}")
                 
-                # Strategy 2: If it's a forum topic, try without topic ID
-                if ("cannot find any entity" in error_text or "entity not found" in error_text) and "/" in destination_id:
+                # Strategy 2: Handle TOPIC_CLOSED errors for forum topics
+                if "topic_closed" in error_text and "/" in destination_id:
+                    logger.info(f"Topic closed detected for {destination_id}, trying to find active topics...")
+                    try:
+                        # For forum topics, try to find active topics in the group
+                        success = await self._handle_forum_topic_posting(worker, destination_id, rotated_message)
+                        if success:
+                            logger.info(f"Successfully posted to active topic in {destination_id}")
+                    except Exception as topic_error:
+                        logger.warning(f"Failed to find active topics: {topic_error}")
+                        success = False
+                
+                # Strategy 3: Handle special groups like Sector Market that require additional steps
+                elif "cannot find any entity" in error_text or "entity not found" in error_text:
+                    if "sector" in destination_id.lower() or "market" in destination_id.lower():
+                        logger.info(f"Special group detected: {destination_id}, trying enhanced joining...")
+                        try:
+                            success = await self._handle_special_group_posting(worker, destination_id, rotated_message)
+                            if success:
+                                logger.info(f"Successfully posted to special group: {destination_id}")
+                        except Exception as special_error:
+                            logger.warning(f"Failed to post to special group: {special_error}")
+                            success = False
+                
+                # Strategy 4: If it's a forum topic, try without topic ID
+                elif ("cannot find any entity" in error_text or "entity not found" in error_text) and "/" in destination_id:
                     try:
                         group_only = destination_id.split('/')[0]
-                        logger.info(f"Strategy 2: Retrying with group only: {group_only}")
+                        logger.info(f"Strategy 4: Retrying with group only: {group_only}")
                         success = await worker.send_message(group_only, rotated_message)
                         if success:
                             logger.info(f"Successfully posted to group (without topic): {group_only}")
                         else:
-                            logger.warning(f"Strategy 2 failed: {group_only}")
+                            logger.warning(f"Strategy 4 failed: {group_only}")
                     except Exception as fallback_error:
-                        logger.warning(f"Strategy 2 also failed: {fallback_error}")
+                        logger.warning(f"Strategy 4 also failed: {fallback_error}")
                         success = False
                 
-                # Strategy 3: Try with t.me/ prefix for forum topics
+                # Strategy 5: Try with t.me/ prefix for forum topics
                 elif not success and "/" in destination_id and destination_id.startswith("@"):
                     try:
                         # Convert @username/topic to t.me/username/topic
                         t_me_format = destination_id.replace("@", "t.me/")
-                        logger.info(f"Strategy 3: Trying t.me format: {t_me_format}")
+                        logger.info(f"Strategy 5: Trying t.me format: {t_me_format}")
                         success = await worker.send_message(t_me_format, rotated_message)
                         if success:
                             logger.info(f"Successfully posted using t.me format: {t_me_format}")
                         else:
-                            logger.warning(f"Strategy 3 failed: {t_me_format}")
+                            logger.warning(f"Strategy 5 failed: {t_me_format}")
                     except Exception as t_me_error:
-                        logger.warning(f"Strategy 3 also failed: {t_me_error}")
+                        logger.warning(f"Strategy 5 also failed: {t_me_error}")
                         success = False
                 
-                # Strategy 4: Try with https:// prefix
+                # Strategy 6: Try with https:// prefix
                 elif not success and "/" in destination_id and destination_id.startswith("@"):
                     try:
                         # Convert @username/topic to https://t.me/username/topic
                         https_format = f"https://{destination_id.replace('@', 't.me/')}"
-                        logger.info(f"Strategy 4: Trying https format: {https_format}")
+                        logger.info(f"Strategy 6: Trying https format: {https_format}")
                         success = await worker.send_message(https_format, rotated_message)
                         if success:
                             logger.info(f"Successfully posted using https format: {https_format}")
                         else:
-                            logger.warning(f"Strategy 4 failed: {https_format}")
+                            logger.warning(f"Strategy 6 failed: {https_format}")
                     except Exception as https_error:
-                        logger.warning(f"Strategy 4 also failed: {https_error}")
+                        logger.warning(f"Strategy 6 also failed: {https_error}")
                         success = False
                 
                 # If all strategies failed, re-raise the original error for other error handling
@@ -469,3 +495,124 @@ class PostingService:
         from datetime import datetime
         self.last_global_join = datetime.now()
         self.global_join_count_today += 1
+
+    async def _handle_forum_topic_posting(self, worker: WorkerClient, destination_id: str, message: str) -> bool:
+        """Handle posting to forum topics when main topic is closed."""
+        try:
+            # Extract group name and topic ID from forum topic
+            if "/" in destination_id:
+                group_name = destination_id.split('/')[0]
+                original_topic_id = destination_id.split('/')[1]
+            else:
+                group_name = destination_id
+                original_topic_id = None
+            
+            logger.info(f"Attempting to find active topics in {group_name}")
+            
+            # Try to get the group entity
+            try:
+                group_entity = await worker.get_entity(group_name)
+            except Exception as e:
+                logger.warning(f"Could not get group entity for {group_name}: {e}")
+                return False
+            
+            # Try to get forum topics
+            try:
+                from telethon.tl.functions.messages import GetForumTopicsRequest
+                from telethon.tl.types import InputPeerChannel
+                
+                if hasattr(group_entity, 'id'):
+                    input_peer = InputPeerChannel(group_entity.id, group_entity.access_hash)
+                    topics_result = await worker(GetForumTopicsRequest(
+                        channel=input_peer,
+                        offset_date=None,
+                        offset_id=0,
+                        offset_topic=0,
+                        limit=20  # Get more topics to find the specific one
+                    ))
+                    
+                    # First, try to find the specific topic mentioned in the destination
+                    if original_topic_id:
+                        logger.info(f"Looking for specific topic ID: {original_topic_id}")
+                        for topic in topics_result.topics:
+                            if hasattr(topic, 'id') and str(topic.id) == str(original_topic_id):
+                                try:
+                                    topic_destination = f"{group_name}/{topic.id}"
+                                    logger.info(f"Found specific topic, trying to post: {topic_destination}")
+                                    success = await worker.send_message(topic_destination, message)
+                                    if success:
+                                        logger.info(f"Successfully posted to specific topic: {topic_destination}")
+                                        return True
+                                except Exception as topic_error:
+                                    logger.debug(f"Failed to post to specific topic {topic.id}: {topic_error}")
+                                    break  # Don't try other topics if specific one fails
+                    
+                    # If specific topic not found or failed, try other active topics
+                    logger.info(f"Trying alternative active topics in {group_name}")
+                    for topic in topics_result.topics[:5]:  # Try first 5 topics as fallback
+                        if hasattr(topic, 'id') and topic.id:
+                            # Skip if this is the original topic we already tried
+                            if original_topic_id and str(topic.id) == str(original_topic_id):
+                                continue
+                                
+                            try:
+                                topic_destination = f"{group_name}/{topic.id}"
+                                logger.info(f"Trying to post to alternative topic: {topic_destination}")
+                                success = await worker.send_message(topic_destination, message)
+                                if success:
+                                    logger.info(f"Successfully posted to alternative topic: {topic_destination}")
+                                    return True
+                            except Exception as topic_error:
+                                logger.debug(f"Failed to post to alternative topic {topic.id}: {topic_error}")
+                                continue
+                    
+                    logger.warning(f"No active topics found in {group_name}")
+                    return False
+                    
+            except Exception as forum_error:
+                logger.warning(f"Could not get forum topics for {group_name}: {forum_error}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error in forum topic posting: {e}")
+            return False
+    
+    async def _handle_special_group_posting(self, worker: WorkerClient, destination_id: str, message: str) -> bool:
+        """Handle posting to special groups that require additional steps."""
+        try:
+            logger.info(f"Handling special group posting for: {destination_id}")
+            
+            # For Sector Market type groups, try to navigate to the posting area
+            if "sector" in destination_id.lower():
+                logger.info("Detected Sector Market group, attempting enhanced joining...")
+                
+                # Try to get group info first
+                try:
+                    group_entity = await worker.get_entity(destination_id)
+                    logger.info(f"Successfully got entity for {destination_id}")
+                    
+                    # Try posting with a slight delay to allow for group loading
+                    await asyncio.sleep(2)
+                    
+                    # Try posting again
+                    success = await worker.send_message(destination_id, message)
+                    if success:
+                        logger.info(f"Successfully posted to Sector Market: {destination_id}")
+                        return True
+                    else:
+                        logger.warning(f"Failed to post to Sector Market: {destination_id}")
+                        return False
+                        
+                except Exception as entity_error:
+                    logger.warning(f"Could not get entity for {destination_id}: {entity_error}")
+                    return False
+            
+            # For other special groups, try standard approach
+            else:
+                logger.info(f"Trying standard posting for special group: {destination_id}")
+                success = await worker.send_message(destination_id, message)
+                return success
+                
+        except Exception as e:
+            logger.error(f"Error in special group posting: {e}")
+            return False

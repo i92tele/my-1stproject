@@ -456,6 +456,14 @@ class DatabaseManager:
                         self.logger.warning(f"Failed to seed predefined groups: {seed_err}")
 
                 conn.close()
+                
+                # Run admin slots migration
+                try:
+                    await self.migrate_admin_slots_table()
+                    self.logger.info("Admin slots migration completed")
+                except Exception as migration_error:
+                    self.logger.error(f"Admin slots migration failed: {migration_error}")
+                
                 self.logger.info("Database initialized successfully")
 
             except Exception as e:
@@ -838,18 +846,29 @@ class DatabaseManager:
                 self.logger.error(f"Error removing slot destination: {e}")
                 return False
 
-    async def get_slot_destinations(self, slot_id: int) -> List[Dict[str, Any]]:
-        """Get all destinations for a slot."""
+    async def get_slot_destinations(self, slot_id: int, slot_type: str = 'user') -> List[Dict[str, Any]]:
+        """Get all destinations for a slot (user or admin)."""
         async with self._lock:
             try:
                 conn = sqlite3.connect(self.db_path, timeout=15)
                 conn.execute("PRAGMA busy_timeout=15000;")
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT * FROM slot_destinations 
-                    WHERE slot_id = ? AND is_active = 1 AND COALESCE(requires_manual,0) = 0
-                ''', (slot_id,))
+                
+                if slot_type == 'admin':
+                    # For admin slots, get destinations from admin_slot_destinations table
+                    cursor.execute('''
+                        SELECT destination_id, destination_name, destination_type 
+                        FROM admin_slot_destinations 
+                        WHERE slot_id = ?
+                    ''', (slot_id,))
+                else:
+                    # For user slots, use existing logic
+                    cursor.execute('''
+                        SELECT * FROM slot_destinations 
+                        WHERE slot_id = ? AND is_active = 1 AND COALESCE(requires_manual,0) = 0
+                    ''', (slot_id,))
+                    
                 destinations = [dict(row) for row in cursor.fetchall()]
                 conn.close()
                 return destinations
@@ -1305,7 +1324,7 @@ class DatabaseManager:
                 }
 
     async def get_active_ads_to_send(self) -> List[Dict[str, Any]]:
-        """Get active ad slots that are due for posting."""
+        """Get active ad slots that are due for posting (includes both user and admin slots)."""
         async with self._lock:
             try:
                 conn = sqlite3.connect(self.db_path, timeout=15)
@@ -1313,9 +1332,11 @@ class DatabaseManager:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 
-                # Get active slots that are due for posting
+                all_slots = []
+                
+                # Get active user slots that are due for posting
                 cursor.execute('''
-                    SELECT s.*, u.username 
+                    SELECT s.*, u.username, 'user' as slot_type
                     FROM ad_slots s
                     JOIN users u ON s.user_id = u.user_id
                     WHERE s.is_active = 1 
@@ -1328,26 +1349,55 @@ class DatabaseManager:
                     ORDER BY (s.last_sent_at IS NOT NULL), s.last_sent_at ASC
                 ''')
                 
-                slots = [dict(row) for row in cursor.fetchall()]
+                user_slots = [dict(row) for row in cursor.fetchall()]
+                all_slots.extend(user_slots)
+                
+                # Get active admin slots that are due for posting
+                cursor.execute('''
+                    SELECT s.*, 'admin' as username, 'admin' as slot_type
+                    FROM admin_ad_slots s
+                    WHERE s.is_active = 1 
+                    AND s.content IS NOT NULL 
+                    AND s.content != ''
+                    AND (
+                        s.last_sent_at IS NULL 
+                        OR datetime('now') >= datetime(s.last_sent_at, '+' || COALESCE(s.interval_minutes, 60) || ' minutes')
+                    )
+                    ORDER BY (s.last_sent_at IS NOT NULL), s.last_sent_at ASC
+                ''')
+                
+                admin_slots = [dict(row) for row in cursor.fetchall()]
+                all_slots.extend(admin_slots)
+                
                 conn.close()
-                return slots
+                self.logger.info(f"Found {len(user_slots)} user slots and {len(admin_slots)} admin slots ready for posting")
+                return all_slots
                 
             except Exception as e:
                 self.logger.error(f"Error getting active ads to send: {e}")
                 return []
 
-    async def update_slot_last_sent(self, slot_id: int) -> bool:
-        """Update the last_sent_at timestamp for a slot."""
+    async def update_slot_last_sent(self, slot_id: int, slot_type: str = 'user') -> bool:
+        """Update the last_sent_at timestamp for a slot (user or admin)."""
         async with self._lock:
             try:
                 conn = sqlite3.connect(self.db_path, timeout=15)
                 conn.execute("PRAGMA busy_timeout=15000;")
                 cursor = conn.cursor()
-                cursor.execute('''
-                    UPDATE ad_slots 
-                    SET last_sent_at = ?
-                    WHERE id = ?
-                ''', (datetime.now(), slot_id))
+                
+                if slot_type == 'admin':
+                    cursor.execute('''
+                        UPDATE admin_ad_slots 
+                        SET last_sent_at = ?
+                        WHERE id = ?
+                    ''', (datetime.now(), slot_id))
+                else:
+                    cursor.execute('''
+                        UPDATE ad_slots 
+                        SET last_sent_at = ?
+                        WHERE id = ?
+                    ''', (datetime.now(), slot_id))
+                    
                 conn.commit()
                 conn.close()
                 return True
@@ -1715,10 +1765,234 @@ class DatabaseManager:
             self.logger.error(f"Error activating subscription: {e}")
             return False
 
+    async def upgrade_user_subscription(self, user_id: int, from_tier: str, to_tier: str) -> bool:
+        """Upgrade user subscription from one tier to another."""
+        try:
+            # Get current subscription
+            current_sub = await self.get_user_subscription(user_id)
+            if not current_sub:
+                return False
+
+            # Calculate remaining days
+            try:
+                current_expiry = datetime.fromisoformat(current_sub['expires'])
+                remaining_days = (current_expiry - datetime.now()).days
+                if remaining_days < 0:
+                    remaining_days = 0
+            except Exception:
+                remaining_days = 0
+
+            # Update subscription tier
+            async with self._lock:
+                conn = sqlite3.connect(self.db_path, timeout=60)
+                conn.execute("PRAGMA busy_timeout=60000;")
+                conn.execute("PRAGMA journal_mode=WAL;")
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users 
+                    SET subscription_tier = ?, updated_at = ?
+                    WHERE user_id = ?
+                ''', (to_tier, datetime.now(), user_id))
+                conn.commit()
+                conn.close()
+
+            # Update ad slots to match new tier
+            await self.fix_user_ad_slots(user_id, to_tier)
+
+            self.logger.info(f"✅ Upgraded user {user_id} from {from_tier} to {to_tier}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error upgrading subscription: {e}")
+            return False
+
+    async def extend_user_subscription(self, user_id: int, tier: str, days: int) -> bool:
+        """Extend user subscription by specified number of days."""
+        try:
+            # Get current subscription
+            current_sub = await self.get_user_subscription(user_id)
+            if not current_sub:
+                return False
+
+            # Calculate new expiry date
+            try:
+                current_expiry = datetime.fromisoformat(current_sub['expires'])
+                if current_expiry < datetime.now():
+                    # Subscription expired, start from now
+                    new_expiry = datetime.now() + timedelta(days=days)
+                else:
+                    # Extend existing subscription
+                    new_expiry = current_expiry + timedelta(days=days)
+            except Exception:
+                # Fallback: start from now
+                new_expiry = datetime.now() + timedelta(days=days)
+
+            # Update subscription
+            async with self._lock:
+                conn = sqlite3.connect(self.db_path, timeout=60)
+                conn.execute("PRAGMA busy_timeout=60000;")
+                conn.execute("PRAGMA journal_mode=WAL;")
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users 
+                    SET subscription_expires = ?, updated_at = ?
+                    WHERE user_id = ?
+                ''', (new_expiry, datetime.now(), user_id))
+                conn.commit()
+                conn.close()
+
+            self.logger.info(f"✅ Extended user {user_id} subscription by {days} days until {new_expiry}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error extending subscription: {e}")
+            return False
+
     async def close(self):
         """Close database connections."""
         # SQLite doesn't need explicit connection closing
         pass
+
+    # Admin Slot Database Methods
+    async def create_admin_ad_slots(self) -> bool:
+        """Create the initial 20 admin ad slots."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.create_admin_ad_slots()
+        except Exception as e:
+            self.logger.error(f"Error creating admin ad slots: {e}")
+            return False
+
+    async def get_admin_ad_slots(self) -> List[Dict[str, Any]]:
+        """Get all admin ad slots."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.get_admin_ad_slots()
+        except Exception as e:
+            self.logger.error(f"Error getting admin ad slots: {e}")
+            return []
+
+    async def get_admin_ad_slot(self, slot_number: int) -> Optional[Dict[str, Any]]:
+        """Get a specific admin ad slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.get_admin_ad_slot(slot_number)
+        except Exception as e:
+            self.logger.error(f"Error getting admin ad slot {slot_number}: {e}")
+            return None
+    
+    async def update_admin_slot_interval(self, slot_id: int, interval_minutes: int) -> bool:
+        """Update the posting interval for an admin slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.update_admin_slot_interval(slot_id, interval_minutes)
+        except Exception as e:
+            self.logger.error(f"Error updating admin slot interval: {e}")
+            return False
+    
+    async def migrate_admin_slots_table(self) -> bool:
+        """Migrate admin slots table to add missing columns."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.migrate_admin_slots_table()
+        except Exception as e:
+            self.logger.error(f"Error migrating admin slots table: {e}")
+            return False
+
+    async def update_admin_slot_content(self, slot_id: int, content: str) -> bool:
+        """Update content for an admin slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.update_admin_slot_content(slot_id, content)
+        except Exception as e:
+            self.logger.error(f"Error updating admin slot content: {e}")
+            return False
+
+    async def update_admin_slot_destinations(self, slot_id: int, destinations: List[Dict[str, Any]]) -> bool:
+        """Update destinations for an admin slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.update_admin_slot_destinations(slot_id, destinations)
+        except Exception as e:
+            self.logger.error(f"Error updating admin slot destinations: {e}")
+            return False
+
+    async def update_admin_slot_status(self, slot_id: int, is_active: bool) -> bool:
+        """Update active status for an admin slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.update_admin_slot_status(slot_id, is_active)
+        except Exception as e:
+            self.logger.error(f"Error updating admin slot status: {e}")
+            return False
+
+    async def get_admin_slot_destinations(self, slot_id: int) -> List[Dict[str, Any]]:
+        """Get destinations for a specific admin slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.get_admin_slot_destinations(slot_id)
+        except Exception as e:
+            self.logger.error(f"Error getting admin slot destinations: {e}")
+            return []
+
+    async def get_admin_slots_stats(self) -> Dict[str, Any]:
+        """Get statistics for admin slots."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.get_admin_slots_stats()
+        except Exception as e:
+            self.logger.error(f"Error getting admin slots stats: {e}")
+            return {}
+
+    async def add_admin_slot_destination(self, slot_id: int, destination_data: Dict[str, Any]) -> bool:
+        """Add a destination to an admin slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.add_admin_slot_destination(slot_id, destination_data)
+        except Exception as e:
+            self.logger.error(f"Error adding destination to admin slot: {e}")
+            return False
+
+    async def remove_admin_slot_destination(self, slot_id: int, destination_id: str) -> bool:
+        """Remove a destination from an admin slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.remove_admin_slot_destination(slot_id, destination_id)
+        except Exception as e:
+            self.logger.error(f"Error removing destination from admin slot: {e}")
+            return False
+
+    async def clear_admin_slot_destinations(self, slot_id: int) -> bool:
+        """Clear all destinations from an admin slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.clear_admin_slot_destinations(slot_id)
+        except Exception as e:
+            self.logger.error(f"Error clearing destinations from admin slot: {e}")
+            return False
+
+    async def delete_admin_slot(self, slot_id: int) -> bool:
+        """Delete an admin slot."""
+        try:
+            from database_admin_slots import AdminSlotDatabase
+            admin_db = AdminSlotDatabase(self.db_path, self.logger)
+            return await admin_db.delete_admin_slot(slot_id)
+        except Exception as e:
+            self.logger.error(f"Error deleting admin slot: {e}")
+            return False
 
     async def get_connection(self):
         """Get a database connection."""
@@ -2695,3 +2969,180 @@ class DatabaseManager:
             except Exception as e:
                 self.logger.error(f"Error getting failed group stats: {e}")
                 return {}
+
+    async def get_all_subscriptions(self) -> List[Dict[str, Any]]:
+        """Get all user subscriptions."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=60)
+                conn.execute("PRAGMA busy_timeout=60000;")
+                conn.execute("PRAGMA journal_mode=WAL;")
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT user_id, subscription_tier, subscription_expires, created_at, updated_at
+                    FROM users 
+                    WHERE subscription_tier IS NOT NULL
+                ''')
+                
+                subscriptions = []
+                for row in cursor.fetchall():
+                    subscriptions.append({
+                        'user_id': row[0],
+                        'tier': row[1],
+                        'expires': row[2],
+                        'created_at': row[3],
+                        'updated_at': row[4]
+                    })
+                
+                conn.close()
+                return subscriptions
+                
+            except Exception as e:
+                self.logger.error(f"Error getting all subscriptions: {e}")
+                return []
+
+    async def delete_user(self, user_id: int) -> bool:
+        """Delete a user and all associated data."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=60)
+                conn.execute("PRAGMA busy_timeout=60000;")
+                conn.execute("PRAGMA journal_mode=WAL;")
+                cursor = conn.cursor()
+                
+                # Delete user's ad slots
+                cursor.execute('DELETE FROM ad_slots WHERE user_id = ?', (user_id,))
+                
+                # Delete user's slot destinations
+                cursor.execute('''
+                    DELETE FROM slot_destinations 
+                    WHERE slot_id IN (SELECT id FROM ad_slots WHERE user_id = ?)
+                ''', (user_id,))
+                
+                # Delete user's payments
+                cursor.execute('DELETE FROM payments WHERE user_id = ?', (user_id,))
+                
+                # Delete user
+                cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+                
+                conn.commit()
+                conn.close()
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Error deleting user {user_id}: {e}")
+                return False
+
+    async def get_all_ad_slots(self) -> List[Dict[str, Any]]:
+        """Get all ad slots."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=60)
+                conn.execute("PRAGMA busy_timeout=60000;")
+                conn.execute("PRAGMA journal_mode=WAL;")
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT id, user_id, slot_number, content, is_active, interval_minutes, created_at, updated_at
+                    FROM ad_slots
+                ''')
+                
+                ad_slots = []
+                for row in cursor.fetchall():
+                    ad_slots.append({
+                        'id': row[0],
+                        'user_id': row[1],
+                        'slot_number': row[2],
+                        'content': row[3],
+                        'is_active': bool(row[4]),
+                        'interval_minutes': row[5],
+                        'created_at': row[6],
+                        'updated_at': row[7]
+                    })
+                
+                conn.close()
+                return ad_slots
+                
+            except Exception as e:
+                self.logger.error(f"Error getting all ad slots: {e}")
+                return []
+
+    async def get_all_payments(self) -> List[Dict[str, Any]]:
+        """Get all payments."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=60)
+                conn.execute("PRAGMA busy_timeout=60000;")
+                conn.execute("PRAGMA journal_mode=WAL;")
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT payment_id, user_id, amount, currency, status, created_at, expires_at
+                    FROM payments
+                ''')
+                
+                payments = []
+                for row in cursor.fetchall():
+                    payments.append({
+                        'payment_id': row[0],
+                        'user_id': row[1],
+                        'amount': row[2],
+                        'currency': row[3],
+                        'status': row[4],
+                        'created_at': row[5],
+                        'expires_at': row[6]
+                    })
+                
+                conn.close()
+                return payments
+                
+            except Exception as e:
+                self.logger.error(f"Error getting all payments: {e}")
+                return []
+
+    async def get_ad_slot_destinations(self, slot_id: int) -> List[Dict[str, Any]]:
+        """Get destinations for a specific ad slot."""
+        async with self._lock:
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=60)
+                conn.execute("PRAGMA busy_timeout=60000;")
+                conn.execute("PRAGMA journal_mode=WAL;")
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT destination_id, destination_name, destination_type, created_at
+                    FROM slot_destinations 
+                    WHERE slot_id = ?
+                ''', (slot_id,))
+                
+                destinations = []
+                for row in cursor.fetchall():
+                    destinations.append({
+                        'destination_id': row[0],
+                        'destination_name': row[1],
+                        'destination_type': row[2],
+                        'created_at': row[3]
+                    })
+                
+                conn.close()
+                return destinations
+                
+            except Exception as e:
+                self.logger.error(f"Error getting ad slot destinations: {e}")
+                return []
+
+    async def get_connection(self):
+        """Get a database connection for testing."""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=60)
+            conn.execute("PRAGMA busy_timeout=60000;")
+            conn.execute("PRAGMA journal_mode=WAL;")
+            return conn
+        except Exception as e:
+            self.logger.error(f"Error getting database connection: {e}")
+            return None
+
+    def close(self):
+        """Close the database manager."""
+        pass

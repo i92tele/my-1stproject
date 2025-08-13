@@ -12,13 +12,28 @@ logger = logging.getLogger(__name__)
 async def check_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Check if the user is an admin."""
     try:
-        config = context.bot_data['config']
-        user_id = update.effective_user.id
+        config = context.bot_data.get('config')
+        if not config:
+            logger.error("Config not available in context")
+            return False
+            
+        user = update.effective_user
+        if not user:
+            logger.error("No effective user in update")
+            return False
+            
+        user_id = user.id
         is_admin = config.is_admin(user_id)
-        logger.info(f"Admin check for user {user_id}: {is_admin}")
+        
+        if is_admin:
+            logger.info(f"Admin access granted to user {user_id}")
+        else:
+            logger.warning(f"Admin access denied to user {user_id}")
+            
         return is_admin
+        
     except Exception as e:
-        logger.error(f"Error in check_admin: {e}")
+        logger.error(f"Error checking admin status: {e}")
         return False
 
 def _parse_id_or_username(token: str) -> str:
@@ -104,6 +119,20 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"➕ Added {added} chats to category '{category}'.{' Errors: ' + str(errors) if errors else ''}")
             return
 
+        # Admin slot content setting
+        if 'awaiting_admin_content' in context.user_data:
+            try:
+                from commands import admin_slot_commands
+                if hasattr(admin_slot_commands, 'handle_admin_content_message'):
+                    handled = await admin_slot_commands.handle_admin_content_message(update, context)
+                    if handled:
+                        return
+            except Exception as e:
+                logger.error(f"Error handling admin content: {e}")
+                await update.message.reply_text("❌ Error processing admin content.")
+                context.user_data.clear()
+                return
+
     except Exception as e:
         logger.error(f"Error in handle_admin_text: {e}")
         await update.message.reply_text("❌ Error processing input.")
@@ -128,10 +157,10 @@ def _parse_bulk_groups_text(text: str) -> Dict[str, Set[str]]:
         if not current_category:
             # Ignore lines before first category
             continue
-        # Extract usernames from any t.me links in the line
-        for match in re.findall(r"(?:https?://)?t\.me/([A-Za-z0-9_]+)(?:/\d+)?", line):
-            # Ignore numeric-only IDs (rare), store username only
-            if match:
+        # Extract usernames from any t.me links in the line, preserving topic IDs
+        for match in re.findall(r"(?:https?://)?t\.me/([A-Za-z0-9_]+(?:/\d+)?)", line):
+            # Store username with topic ID if present
+            if match and not match.isdigit():  # Ignore numeric-only IDs
                 results[current_category].add(match)
     # Drop empty categories
     return {cat: users for cat, users in results.items() if users}
@@ -605,6 +634,58 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in list_users: {e}")
         await update.message.reply_text("❌ Error retrieving users")
 
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show admin menu with available options."""
+    if not await check_admin(update, context):
+        if update.callback_query:
+            await update.callback_query.answer("❌ Admin access required.")
+        else:
+            await update.message.reply_text("❌ Admin access required.")
+        return
+        
+    try:
+        message_text = "🔧 **Admin Menu**\n\nSelect an admin option:"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🎯 Admin Slots", callback_data="cmd:admin_slots"),
+                InlineKeyboardButton("📊 Admin Stats", callback_data="cmd:admin_stats")
+            ],
+            [
+                InlineKeyboardButton("📋 List Groups", callback_data="cmd:list_groups"),
+                InlineKeyboardButton("👥 List Users", callback_data="cmd:list_users")
+            ],
+            [
+                InlineKeyboardButton("🔧 System Check", callback_data="cmd:system_check"),
+                InlineKeyboardButton("📡 Posting Status", callback_data="cmd:posting_status")
+            ],
+            [
+                InlineKeyboardButton("⚠️ Failed Groups", callback_data="cmd:failed_groups"),
+                InlineKeyboardButton("⏸️ Paused Slots", callback_data="cmd:paused_slots")
+            ],
+            [
+                InlineKeyboardButton("💰 Revenue Stats", callback_data="cmd:revenue_stats"),
+                InlineKeyboardButton("🤖 Worker Status", callback_data="cmd:worker_status")
+            ],
+            [
+                InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Error in admin_menu: {e}")
+        if update.callback_query:
+            await update.callback_query.answer("❌ Error loading admin menu")
+        else:
+            await update.message.reply_text("❌ Error loading admin menu")
+
 async def test_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Test admin command to verify admin functionality."""
     user_id = update.effective_user.id
@@ -674,7 +755,11 @@ async def add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all managed groups."""
     if not await check_admin(update, context):
-        await update.message.reply_text("❌ Admin access required.")
+        # Handle both command and callback query calls
+        if update.callback_query:
+            await update.callback_query.answer("❌ Admin access required.")
+        else:
+            await update.message.reply_text("❌ Admin access required.")
         return
         
     try:
@@ -695,14 +780,22 @@ async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🧨 Purge Group", callback_data="admin:purge_menu:group")
             ])
             rows.append([InlineKeyboardButton("💥 Purge ALL Groups", callback_data="admin:purge_all_groups")])
-            await update.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
+            # Handle both command and callback query calls
+            if update.callback_query:
+                await update.callback_query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
+            else:
+                await update.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
             return
         # Fallback to full list if no categories
         groups = await db.get_managed_groups()
         admin_all = await db.get_managed_groups("admin_all")
         
         if not groups:
-            await update.message.reply_text("📋 No managed groups found.")
+            # Handle both command and callback query calls
+            if update.callback_query:
+                await update.callback_query.edit_message_text("📋 No managed groups found.")
+            else:
+                await update.message.reply_text("📋 No managed groups found.")
             return
         
         # Paginate to avoid long messages
@@ -733,11 +826,19 @@ async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         keyboard.append([InlineKeyboardButton("💥 Purge ALL Groups", callback_data="admin:purge_all_groups")])
 
-        await update.message.reply_text("\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard))
+        # Handle both command and callback query calls
+        if update.callback_query:
+            await update.callback_query.edit_message_text("\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.message.reply_text("\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard))
         
     except Exception as e:
         logger.error(f"Error listing groups: {e}")
-        await update.message.reply_text("❌ Error listing groups.")
+        # Handle both command and callback query calls
+        if update.callback_query:
+            await update.callback_query.answer("❌ Error listing groups.")
+        else:
+            await update.message.reply_text("❌ Error listing groups.")
 
 async def _render_admin_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -824,9 +925,15 @@ async def posting_service_status(update: Update, context: ContextTypes.DEFAULT_T
         workers = await db.get_all_workers()
         available_workers = await db.get_available_workers()
 
+        # Separate user and admin slots
+        user_slots = [slot for slot in due_slots if slot.get('slot_type') == 'user']
+        admin_slots = [slot for slot in due_slots if slot.get('slot_type') == 'admin']
+
         lines = ["📡 Posting Service Status", ""]
         lines.append(f"Workers available: {len(available_workers)}/{len(workers)}")
-        lines.append(f"Ads due now: {len(due_slots)}")
+        lines.append(f"**Total ads due now: {len(due_slots)}**")
+        lines.append(f"  • User ads: {len(user_slots)}")
+        lines.append(f"  • Admin ads: {len(admin_slots)}")
         lines.append("")
         if available_workers:
             lines.append("Top available workers (ID | hourly/daily):")
@@ -1073,10 +1180,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                     await query.answer("Remove failed")
             return
         if action == "back_to_groups":
-            # Re-render groups list
-            class DummyMsg:
-                def __init__(self, chat_id): self.chat_id = chat_id
-            update.message = type('m', (), {'chat_id': query.message.chat_id, 'reply_text': query.message.reply_text})
+            # Re-render groups list using callback query
             await list_groups(update, context)
             return
         if action == "show_admin_all":
@@ -1545,7 +1649,19 @@ async def worker_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             avg_safety = total_safety_score / len(workers)
             lines.append("")
             lines.append(f"Totals: Hourly={total_hourly_posts}, Daily={total_daily_posts}, AvgSafety={avg_safety:.1f}")
-        await update.message.reply_text("\n".join(lines))
+            
+            # Add workload information
+            due_slots = await db.get_active_ads_to_send()
+            user_slots = [slot for slot in due_slots if slot.get('slot_type') == 'user']
+            admin_slots = [slot for slot in due_slots if slot.get('slot_type') == 'admin']
+            
+            lines.append("")
+            lines.append(f"**Current Workload:**")
+            lines.append(f"  • User ads pending: {len(user_slots)}")
+            lines.append(f"  • Admin ads pending: {len(admin_slots)}")
+            lines.append(f"  • Total workload: {len(due_slots)}")
+            
+        await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Error getting worker status: {e}")
@@ -1616,13 +1732,20 @@ async def worker_capacity_check(update: Update, context: ContextTypes.DEFAULT_TY
         available_workers = await db.get_available_workers()
         all_workers = await db.get_all_workers()
         due_slots = await db.get_active_ads_to_send()
+        
+        # Separate user and admin slots
+        user_slots = [slot for slot in due_slots if slot.get('slot_type') == 'user']
+        admin_slots = [slot for slot in due_slots if slot.get('slot_type') == 'admin']
+        
         pending_ads = len(due_slots)
         num_available = len(available_workers)
         load_ratio = (pending_ads / num_available) if num_available else 0
 
         text = "📊 Capacity Check:\n\n"
         text += f"Workers: {num_available}/{len(all_workers)} available\n"
-        text += f"Pending Ads Due Now: {pending_ads}\n"
+        text += f"**Total Pending Ads: {pending_ads}**\n"
+        text += f"  • User ads: {len(user_slots)}\n"
+        text += f"  • Admin ads: {len(admin_slots)}\n"
         text += f"Load Ratio: {load_ratio:.1f} ads/available worker\n"
         if pending_ads == 0:
             text += "Status: ✅ Idle\n"

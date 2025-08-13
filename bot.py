@@ -29,6 +29,21 @@ from commands import user_commands
 from commands import admin_commands
 from commands import forwarding_commands
 
+# Import new command modules
+try:
+    from commands import subscription_commands
+    SUBSCRIPTION_COMMANDS_AVAILABLE = True
+except ImportError:
+    SUBSCRIPTION_COMMANDS_AVAILABLE = False
+    logging.warning("Subscription commands not available")
+
+try:
+    from commands import admin_slot_commands
+    ADMIN_SLOT_COMMANDS_AVAILABLE = True
+except ImportError:
+    ADMIN_SLOT_COMMANDS_AVAILABLE = False
+    logging.warning("Admin slot commands not available")
+
 # Import new classes
 try:
     from src.worker_manager import WorkerManager
@@ -135,6 +150,23 @@ class AutoFarmingBot:
             else:
                 self.posting_service = None
                 logger.warning("Posting service not available")
+            
+            # Initialize notification scheduler
+            try:
+                from notification_scheduler import NotificationScheduler
+                self.notification_scheduler = NotificationScheduler(self.app.bot, self.db, logger)
+                self.app.bot_data['notification_scheduler'] = self.notification_scheduler
+                logger.info("Notification scheduler initialized")
+                
+                # Note: Notification scheduler will be started when the bot starts
+                # asyncio.create_task() removed to avoid "no running event loop" error
+                logger.info("Notification scheduler ready to start")
+            except ImportError:
+                self.notification_scheduler = None
+                logger.warning("Notification scheduler not available")
+            except Exception as e:
+                self.notification_scheduler = None
+                logger.error(f"Error initializing notification scheduler: {e}")
                 
         except Exception as e:
             logger.error(f"Error initializing optional components: {e}")
@@ -217,6 +249,18 @@ class AutoFarmingBot:
             self.app.add_handler(CommandHandler("capacity_check", admin_commands.worker_capacity_check))
             self.app.add_handler(CommandHandler("activate_subscription", admin_commands.activate_subscription))
             self.app.add_handler(CommandHandler("list_users", admin_commands.list_users))
+            self.app.add_handler(CommandHandler("admin_menu", admin_commands.admin_menu))
+            
+            # --- New Subscription Commands ---
+            if SUBSCRIPTION_COMMANDS_AVAILABLE:
+                self.app.add_handler(CommandHandler("upgrade_subscription", subscription_commands.upgrade_subscription))
+                self.app.add_handler(CommandHandler("prolong_subscription", subscription_commands.prolong_subscription))
+                logger.info("Subscription commands registered")
+            
+            # --- New Admin Slot Commands ---
+            if ADMIN_SLOT_COMMANDS_AVAILABLE:
+                self.app.add_handler(CommandHandler("admin_slots", admin_slot_commands.admin_slots))
+                logger.info("Admin slot commands registered")
             self.app.add_handler(CommandHandler("test_admin", admin_commands.test_admin))
             self.app.add_handler(CommandHandler("fix_user_slots", admin_commands.fix_user_slots))
             self.app.add_handler(CommandHandler("failed_groups", admin_commands.failed_groups))
@@ -300,6 +344,16 @@ class AutoFarmingBot:
                     logger.warning(f"Invalid category callback data: {data}")
             elif data.startswith("cancel_payment:") or data.startswith("copy_address:") or data.startswith("check_payment:"):
                 await user_commands.handle_subscription_callback(update, context)
+            elif data.startswith("upgrade:") or data.startswith("prolong:") or data.startswith("check_upgrade_payment:") or data.startswith("check_prolong_payment:"):
+                if SUBSCRIPTION_COMMANDS_AVAILABLE:
+                    await subscription_commands.handle_subscription_callback(update, context)
+                else:
+                    await query.answer("Subscription features not available")
+            elif data.startswith("admin_slot:") or data.startswith("admin_quick_post") or data.startswith("admin_post_slot:") or data.startswith("admin_set_content:") or data.startswith("admin_set_destinations:") or data.startswith("admin_toggle_slot:") or data.startswith("admin_slot_stats") or data == "admin_slots_refresh" or data == "admin_slots" or data.startswith("admin_category:") or data.startswith("admin_toggle_dest:") or data.startswith("admin_select_category:") or data.startswith("admin_clear_category:") or data.startswith("admin_select_all:") or data.startswith("admin_clear_all:") or data.startswith("admin_save_destinations:") or data.startswith("admin_delete_slot:") or data.startswith("admin_slot_analytics:") or data.startswith("admin_content_template:") or data.startswith("admin_clear_content:") or data.startswith("admin_quick_post_send") or data.startswith("admin_quick_post_template") or data == "admin_menu" or data.startswith("admin_detailed_analytics") or data.startswith("admin_export_stats") or data == "admin_clear_all_content" or data == "admin_clear_all_destinations" or data == "admin_purge_all_slots" or data == "admin_confirm_purge_all_slots":
+                if ADMIN_SLOT_COMMANDS_AVAILABLE:
+                    await admin_slot_commands.handle_admin_slot_callback(update, context)
+                else:
+                    await query.answer("Admin slot features not available")
             else:
                 await query.answer("This feature is coming soon!")
                 logger.warning(f"Unknown callback data: {data}")
@@ -440,6 +494,14 @@ class AutoFarmingBot:
                         logger.info("Posting service started as background task!")
                     except Exception as e:
                         logger.error(f"Failed to start posting service: {e}")
+                
+                # Start notification scheduler if available
+                if self.notification_scheduler:
+                    try:
+                        asyncio.create_task(self.notification_scheduler.start())
+                        logger.info("Notification scheduler started as background task!")
+                    except Exception as e:
+                        logger.error(f"Failed to start notification scheduler: {e}")
             
             logger.info("Bot initialization complete!")
         except asyncio.TimeoutError:

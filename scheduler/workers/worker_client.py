@@ -68,6 +68,37 @@ class WorkerClient:
             return False
             
         try:
+            # Handle forum topics (format: group/topic_id or t.me/group/topic_id)
+            if "/" in chat_id and (chat_id.startswith("@") or chat_id.startswith("t.me/")):
+                # Parse forum topic destination
+                if chat_id.startswith("t.me/"):
+                    # Convert t.me/social/68316 to @social and topic_id = 68316
+                    parts = chat_id.replace("t.me/", "@").split("/")
+                elif chat_id.startswith("@"):
+                    # Handle @social/68316
+                    parts = chat_id.split("/")
+                else:
+                    parts = chat_id.split("/")
+                
+                if len(parts) >= 2:
+                    group_username = parts[0]
+                    topic_id = int(parts[1])
+                    
+                    logger.info(f"Worker {self.worker_id}: Sending to forum topic {group_username}, topic {topic_id}")
+                    
+                    # Get the group entity
+                    group_entity = await self.client.get_entity(group_username)
+                    
+                    # Send message to the specific topic
+                    await self.client.send_message(
+                        group_entity, 
+                        message, 
+                        reply_to=topic_id
+                    )
+                    self.last_activity = asyncio.get_event_loop().time()
+                    return True
+            
+            # Regular chat/channel posting
             await self.client.send_message(chat_id, message)
             self.last_activity = asyncio.get_event_loop().time()
             return True

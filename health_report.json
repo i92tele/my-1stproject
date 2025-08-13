@@ -1,5 +1,5 @@
 {
-  "timestamp": "2025-08-13T02:58:07.673101",
+  "timestamp": "2025-08-13T21:22:50.551411",
   "overall_status": "WARNING",
   "checks": {
     "environment_variables": {
@@ -16,22 +16,15 @@
       "fixes": []
     },
     "dependencies": {
-      "status": "FAIL",
-      "missing_required": [
-        "asyncpg"
-      ],
+      "status": "PASS",
+      "missing_required": [],
       "missing_optional": [
         "redis",
         "cryptography",
         "requests"
       ],
-      "issues": [
-        "Missing required package: asyncpg"
-      ],
-      "fixes": [
-        "Install missing packages: pip install asyncpg",
-        "Or run: pip install -r requirements.txt"
-      ]
+      "issues": [],
+      "fixes": []
     },
     "imports": {
       "status": "PASS",
@@ -40,9 +33,15 @@
       "fixes": []
     },
     "database": {
-      "status": "PASS",
-      "issues": [],
-      "fixes": []
+      "status": "FAIL",
+      "issues": [
+        "Database table access failed: object NoneType can't be used in 'await' expression"
+      ],
+      "fixes": [
+        "Run database migrations: python3 run_migration.py",
+        "Check database schema and table structure",
+        "Verify database permissions"
+      ]
     },
     "bot_configuration": {
       "status": "PASS",
@@ -55,9 +54,15 @@
       "fixes": []
     },
     "critical_user_flows": {
-      "status": "PASS",
-      "issues": [],
-      "fixes": []
+      "status": "FAIL",
+      "issues": [
+        "User flow check failed: object NoneType can't be used in 'await' expression"
+      ],
+      "fixes": [
+        "Check database connection",
+        "Verify database schema",
+        "Test individual flow components"
+      ]
     },
     "file_structure": {
       "status": "PASS",
@@ -79,6 +84,6 @@
     "Missing optional variables: USDT_ADDRESS, USDC_ADDRESS, ADA_ADDRESS, TRX_ADDRESS",
     "Missing optional packages: redis, cryptography, requests"
   ],
-  "success_count": 8,
+  "success_count": 7,
   "total_checks": 9
 }

@@ -149,6 +149,14 @@ async def handle_command_callback(update: Update, context: ContextTypes.DEFAULT_
             await help_command_callback(update, context)
         elif command == "start":
             await start_callback(update, context)
+        elif command == "admin_menu":
+            # Import admin commands to handle admin menu
+            try:
+                from commands import admin_commands
+                await admin_commands.admin_menu(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
         else:
             logger.warning(f"Unknown command: {command}")
             await query.edit_message_text("❌ Unknown command")
@@ -332,13 +340,33 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text = "❌ **No active subscription**"
     
     message_text = (
-        f"🚀 **AutoFarming Pro - Subscription Plans**\n\n"
+        f"🚀 **AutoFarming Pro - Automated Telegram Advertising**\n\n"
         f"{status_text}\n\n"
-        "**Choose your plan:**\n"
-        "• **🥉 Basic** ($15): 1 ad slot, 10 destinations\n"
-        "• **🥈 Pro** ($45): 3 ad slots, 10 destinations each\n"
-        "• **🥇 Enterprise** ($75): 5 ad slots, 10 destinations each\n\n"
-        "*30-day subscription with multi-crypto payment support*\n\n"
+        "**📢 What You Get:**\n"
+        "✅ **Automated posting** to multiple Telegram groups\n"
+        "✅ **Custom scheduling** (post every 1-24 hours)\n"
+        "✅ **Multi-group management** (post to many groups at once)\n"
+        "✅ **Content management** (text, photos, videos)\n"
+        "✅ **Real-time analytics** and performance tracking\n\n"
+        "**💎 Choose your plan:**\n\n"
+        "**🥉 Basic Plan - $15/month**\n"
+        "• **1 advertising campaign** (ad slot)\n"
+        "• **Post to up to 10 groups** per campaign\n"
+        "• **Perfect for:** Small businesses, personal promotion\n\n"
+        "**🥈 Pro Plan - $45/month**\n"
+        "• **3 advertising campaigns** (ad slots)\n"
+        "• **Post to up to 30 groups total** (10 per campaign)\n"
+        "• **Perfect for:** Growing businesses, multiple products\n\n"
+        "**🥇 Enterprise Plan - $75/month**\n"
+        "• **5 advertising campaigns** (ad slots)\n"
+        "• **Post to up to 50 groups total** (10 per campaign)\n"
+        "• **Perfect for:** Large businesses, agencies, marketers\n\n"
+        "**⏰ All plans include:**\n"
+        "• 30-day subscription period\n"
+        "• Multi-cryptocurrency payment support\n"
+        "• 24/7 automated posting\n"
+        "• Professional customer support\n\n"
+        "**📈 Example:** With Basic plan, you can create 1 campaign to automatically post your business ads to 10 different Telegram groups every 2 hours!\n\n"
         "Select a plan to proceed with payment:"
     )
     
@@ -1077,7 +1105,11 @@ async def my_ads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         db = context.bot_data['db']
         user_id = update.effective_user.id
+        config = context.bot_data.get('config')
 
+        # Check if user is admin
+        is_admin = config.is_admin(user_id) if config else False
+        
         # Create user if they don't exist
         user = await db.get_user(user_id)
         if not user:
@@ -1086,6 +1118,11 @@ async def my_ads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 username=update.effective_user.username,
                 first_name=update.effective_user.first_name
             )
+
+        # If admin, show admin slots instead of regular slots
+        if is_admin:
+            await show_admin_ads_interface(update, context)
+            return
 
         subscription = await db.get_user_subscription(user_id)
         logger.info(f"User {user_id} subscription: {subscription}")
@@ -1144,6 +1181,68 @@ async def my_ads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in my_ads_command: {e}")
         error_message = "❌ Sorry, there was an error loading your ads. Please try again."
+        keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(error_message, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(error_message, reply_markup=reply_markup)
+
+async def show_admin_ads_interface(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show admin-specific ads interface."""
+    try:
+        db = context.bot_data['db']
+        
+        # Get admin slots
+        admin_slots = await db.get_admin_ad_slots()
+        
+        if not admin_slots:
+            # Create initial admin slots if none exist
+            await db.create_admin_ad_slots()
+            admin_slots = await db.get_admin_ad_slots()
+        
+        message_text = "🎯 **Admin Ad Slots**\n\n"
+        message_text += f"**Total Slots:** {len(admin_slots)} (Unlimited)\n"
+        message_text += "**Purpose:** Promotional content and announcements\n\n"
+        message_text += "Select a slot to manage:"
+        
+        keyboard = []
+        
+        # Create slot buttons (5 per row)
+        for i in range(0, len(admin_slots), 5):
+            row = []
+            for j in range(5):
+                if i + j < len(admin_slots):
+                    slot = admin_slots[i + j]
+                    slot_number = slot['slot_number']
+                    status = "✅" if slot['is_active'] else "⏸️"
+                    row.append(InlineKeyboardButton(
+                        f"{status} {slot_number}", 
+                        callback_data=f"admin_slot:{slot_number}"
+                    ))
+            keyboard.append(row)
+        
+        # Add management buttons
+        keyboard.append([
+            InlineKeyboardButton("📝 Quick Post", callback_data="admin_quick_post"),
+            InlineKeyboardButton("📊 Slot Stats", callback_data="admin_slot_stats")
+        ])
+        keyboard.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="admin_slots_refresh"),
+            InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Error in show_admin_ads_interface: {e}")
+        error_message = "❌ Error loading admin slots. Please try again."
         keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -1682,13 +1781,33 @@ async def subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         status_text = "❌ **No active subscription**"
     
     message_text = (
-        f"🚀 **AutoFarming Pro - Subscription Plans**\n\n"
+        f"🚀 **AutoFarming Pro - Automated Telegram Advertising**\n\n"
         f"{status_text}\n\n"
-        "**Choose your plan:**\n"
-        "• **🥉 Basic** ($15): 1 ad slot, 10 destinations\n"
-        "• **🥈 Pro** ($45): 3 ad slots, 10 destinations each\n"
-        "• **🥇 Enterprise** ($75): 5 ad slots, 10 destinations each\n\n"
-        "*30-day subscription with multi-crypto payment support*\n\n"
+        "**📢 What You Get:**\n"
+        "✅ **Automated posting** to multiple Telegram groups\n"
+        "✅ **Custom scheduling** (post every 1-24 hours)\n"
+        "✅ **Multi-group management** (post to many groups at once)\n"
+        "✅ **Content management** (text, photos, videos)\n"
+        "✅ **Real-time analytics** and performance tracking\n\n"
+        "**💎 Choose your plan:**\n\n"
+        "**🥉 Basic Plan - $15/month**\n"
+        "• **1 advertising campaign** (ad slot)\n"
+        "• **Post to up to 10 groups** per campaign\n"
+        "• **Perfect for:** Small businesses, personal promotion\n\n"
+        "**🥈 Pro Plan - $45/month**\n"
+        "• **3 advertising campaigns** (ad slots)\n"
+        "• **Post to up to 30 groups total** (10 per campaign)\n"
+        "• **Perfect for:** Growing businesses, multiple products\n\n"
+        "**🥇 Enterprise Plan - $75/month**\n"
+        "• **5 advertising campaigns** (ad slots)\n"
+        "• **Post to up to 50 groups total** (10 per campaign)\n"
+        "• **Perfect for:** Large businesses, agencies, marketers\n\n"
+        "**⏰ All plans include:**\n"
+        "• 30-day subscription period\n"
+        "• Multi-cryptocurrency payment support\n"
+        "• 24/7 automated posting\n"
+        "• Professional customer support\n\n"
+        "**📈 Example:** With Basic plan, you can create 1 campaign to automatically post your business ads to 10 different Telegram groups every 2 hours!\n\n"
         "Select a plan to proceed with payment:"
     )
     
