@@ -13,6 +13,8 @@ cryptography==41.0.7
 # Optional Dependencies
 redis==5.0.1
 psutil==5.9.6
+Pillow==10.1.0
+qrcode==7.4.2
 
 # Development and Testing
 pytest==7.4.3

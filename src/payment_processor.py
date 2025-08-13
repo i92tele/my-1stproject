@@ -106,7 +106,10 @@ class PaymentProcessor:
                 currency='TON',
                 status='pending',
                 expires_at=expires_at,
-                timeout_minutes=self.payment_timeout_minutes
+                timeout_minutes=self.payment_timeout_minutes,
+                crypto_type='TON',
+                payment_provider='direct',
+                provider_payment_id=None
             )
             
             if not success:

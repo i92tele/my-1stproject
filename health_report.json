@@ -1,46 +1,43 @@
 {
-  "timestamp": "2025-08-06T16:13:14.685019",
+  "timestamp": "2025-08-13T02:58:07.673101",
   "overall_status": "WARNING",
   "checks": {
     "environment_variables": {
       "status": "PASS",
       "missing_required": [],
-      "missing_optional": [],
+      "missing_optional": [
+        "USDT_ADDRESS",
+        "USDC_ADDRESS",
+        "ADA_ADDRESS",
+        "TRX_ADDRESS"
+      ],
       "env_file_exists": true,
       "issues": [],
       "fixes": []
     },
     "dependencies": {
-      "status": "PASS",
-      "missing_required": [],
+      "status": "FAIL",
+      "missing_required": [
+        "asyncpg"
+      ],
       "missing_optional": [
         "redis",
-        "cryptography"
-      ],
-      "issues": [],
-      "fixes": []
-    },
-    "imports": {
-      "status": "FAIL",
-      "failed_imports": [
-        [
-          "multi_crypto_payments",
-          "No module named 'multi_crypto_payments'"
-        ],
-        [
-          "fix_worker_system",
-          "No module named 'fix_worker_system'"
-        ]
+        "cryptography",
+        "requests"
       ],
       "issues": [
-        "Failed to import multi_crypto_payments: No module named 'multi_crypto_payments'",
-        "Failed to import fix_worker_system: No module named 'fix_worker_system'"
+        "Missing required package: asyncpg"
       ],
       "fixes": [
-        "Check file paths and ensure all modules exist",
-        "Verify __init__.py files in package directories",
-        "Check for syntax errors in imported modules"
+        "Install missing packages: pip install asyncpg",
+        "Or run: pip install -r requirements.txt"
       ]
+    },
+    "imports": {
+      "status": "PASS",
+      "failed_imports": [],
+      "issues": [],
+      "fixes": []
     },
     "database": {
       "status": "PASS",
@@ -79,7 +76,8 @@
   "issues": [],
   "fixes": [],
   "warnings": [
-    "Missing optional packages: redis, cryptography"
+    "Missing optional variables: USDT_ADDRESS, USDC_ADDRESS, ADA_ADDRESS, TRX_ADDRESS",
+    "Missing optional packages: redis, cryptography, requests"
   ],
   "success_count": 8,
   "total_checks": 9

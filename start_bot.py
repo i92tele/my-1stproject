@@ -67,6 +67,10 @@ def start_new_services():
     print("📁 Using NEW organized structure")
     print("⚠️ Note: Using delays to prevent database conflicts")
     
+    # Set environment variable to disable internal posting service
+    os.environ['DISABLE_INTERNAL_POSTING_SERVICE'] = '1'
+    print("🔧 Set DISABLE_INTERNAL_POSTING_SERVICE=1 to prevent conflicts")
+    
     # Start services with longer delays to prevent database locks
     services = [
         ("Main Bot", "python3 bot.py"),
@@ -100,7 +104,17 @@ def start_services(services):
     for name, command in services:
         print(f"🚀 Starting {name}...")
         try:
-            process = subprocess.Popen(command.split())
+            # Pass current environment to subprocess and activate venv
+            env = os.environ.copy()
+            
+            # Activate virtual environment if it exists
+            venv_path = Path("venv/bin/activate")
+            if venv_path.exists():
+                # Use bash to source venv and run command
+                bash_command = f"source venv/bin/activate && {command}"
+                process = subprocess.Popen(bash_command, shell=True, env=env, executable='/bin/bash')
+            else:
+                process = subprocess.Popen(command.split(), env=env)
             processes.append((name, process))
             print(f"✅ {name} started (PID: {process.pid})")
             time.sleep(3)  # 3 second delay between services
@@ -116,7 +130,17 @@ def start_services_with_delays(services):
     for i, (name, command) in enumerate(services):
         print(f"🚀 Starting {name}...")
         try:
-            process = subprocess.Popen(command.split())
+            # Pass current environment to subprocess and activate venv
+            env = os.environ.copy()
+            
+            # Activate virtual environment if it exists
+            venv_path = Path("venv/bin/activate")
+            if venv_path.exists():
+                # Use bash to source venv and run command
+                bash_command = f"source venv/bin/activate && {command}"
+                process = subprocess.Popen(bash_command, shell=True, env=env, executable='/bin/bash')
+            else:
+                process = subprocess.Popen(command.split(), env=env)
             processes.append((name, process))
             print(f"✅ {name} started (PID: {process.pid})")
             

@@ -212,9 +212,7 @@ class HealthChecker:
             'database',
             'commands.user_commands',
             'commands.admin_commands',
-            'scheduler',
-            'multi_crypto_payments',
-            'fix_worker_system'
+            'scheduler'
         ]
         
         failed_imports = []

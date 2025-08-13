@@ -1,0 +1,119 @@
+=== FORUM TOPIC POSTING SYSTEM TEST OUTPUT ===
+Return Code: 0
+STDOUT:
+🚀 Starting Forum Topic Posting Tests
+============================================================
+🔧 Testing URL Conversion Logic
+==================================================
+
+1. Testing: HTTPS forum topic URL
+   Input: https://t.me/CrystalMarketss/1076
+   Expected: @CrystalMarketss/1076
+   Result: @CrystalMarketss/1076
+   ✅ PASSED
+
+2. Testing: t.me forum topic URL
+   Input: t.me/CrystalMarketss/1076
+   Expected: @CrystalMarketss/1076
+   Result: @CrystalMarketss/1076
+   ✅ PASSED
+
+3. Testing: Already formatted forum topic
+   Input: @CrystalMarketss/1076
+   Expected: @CrystalMarketss/1076
+   Result: @CrystalMarketss/1076
+   ✅ PASSED
+
+4. Testing: HTTPS group URL (no topic)
+   Input: https://t.me/CryptoGroup
+   Expected: @CryptoGroup
+   Result: @CryptoGroup
+   ✅ PASSED
+
+5. Testing: Already formatted group
+   Input: @CryptoGroup
+   Expected: @CryptoGroup
+   Result: @CryptoGroup
+   ✅ PASSED
+
+📊 URL Conversion Results: 5/5 passed
+
+🔧 Testing 4-Tier Fallback Strategies
+==================================================
+
+1. Testing: Forum topic with topic ID
+   Original: @CrystalMarketss/1076
+   Generated Strategies:
+     1. @CrystalMarketss/1076
+     2. @CrystalMarketss
+     3. t.me/CrystalMarketss/1076
+     4. https://t.me/CrystalMarketss/1076
+   ✅ PASSED
+
+2. Testing: Regular group (no topic ID)
+   Original: @CryptoGroup
+   Generated Strategies:
+     1. @CryptoGroup
+     2. @CryptoGroup
+     3. t.me/CryptoGroup
+     4. https://t.me/CryptoGroup
+   ✅ PASSED
+
+📊 Fallback Strategy Results: 2/2 passed
+
+🔧 Testing Error Handling Logic
+==================================================
+
+1. Testing: Entity not found error
+   Error: Cannot find any entity corresponding to @CrystalMarketss/1076
+   Should trigger fallback: True
+   Expected: True
+   ✅ PASSED
+
+2. Testing: Generic entity not found
+   Error: Entity not found
+   Should trigger fallback: True
+   Expected: True
+   ✅ PASSED
+
+3. Testing: Permission error (should not trigger fallback)
+   Error: Permission denied
+   Should trigger fallback: False
+   Expected: False
+   ✅ PASSED
+
+4. Testing: Rate limit error (should not trigger fallback)
+   Error: Flood control exceeded
+   Should trigger fallback: False
+   Expected: False
+   ✅ PASSED
+
+📊 Error Handling Results: 4/4 passed
+
+🔧 Testing Database Flagging Logic
+==================================================
+Testing flagging for:
+  Slot ID: 1
+  Destination: @CrystalMarketss/1076
+  Error: All posting strategies failed: cannot find any entity
+✅ flag_destination_requires_manual method exists
+✅ create_admin_warning method exists
+
+============================================================
+📊 TEST SUMMARY
+============================================================
+✅ URL Conversion Logic: PASSED
+✅ Fallback Strategies: PASSED
+✅ Error Handling Logic: PASSED
+✅ Database Flagging: PASSED
+
+🎯 Overall Result: ALL TESTS PASSED
+🎉 Forum topic posting system is working correctly!
+   - 4-tier fallback strategy implemented
+   - Error handling and flagging functional
+   - URL conversion logic working
+📄 Test results saved to: forum_topic_posting_test_results.json
+
+STDERR:
+2025-08-12 14:33:55,448 - INFO - Database initialized successfully
+

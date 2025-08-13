@@ -3,6 +3,8 @@ import logging
 import os
 import sys
 import asyncio
+import warnings
+from datetime import datetime
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -15,6 +17,9 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, filters
 )
 
+# Suppress PTB warnings about conversation handlers
+warnings.filterwarnings("ignore", message=".*per_message=False.*CallbackQueryHandler.*")
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv('config/.env')
 
@@ -22,13 +27,14 @@ from config import BotConfig
 from database import DatabaseManager
 from commands import user_commands
 from commands import admin_commands
+from commands import forwarding_commands
 
 # Import new classes
 try:
-    from workers.worker_manager import WorkerManager
-    from workers.auto_poster import AutoPoster
-    from payments.payment_processor import PaymentProcessor
-    from services.posting_service import PostingService
+    from src.worker_manager import WorkerManager
+    from src.auto_poster import AutoPoster
+    from src.payment_processor import PaymentProcessor
+    from src.posting_service import PostingService
     NEW_CLASSES_AVAILABLE = True
 except ImportError:
     NEW_CLASSES_AVAILABLE = False
@@ -98,7 +104,8 @@ class AutoFarmingBot:
             if NEW_CLASSES_AVAILABLE:
                 self.worker_manager = WorkerManager(self.db, logger)
                 self.payment_processor = PaymentProcessor(self.db, logger)
-                self.posting_service = PostingService(self.db, self.worker_manager, logger)
+                # PostingService in current implementation takes (db_manager, logger)
+                self.posting_service = PostingService(self.db, logger)
                 self.app.bot_data.update({
                     'worker_manager': self.worker_manager,
                     'payment_processor': self.payment_processor,
@@ -142,29 +149,34 @@ class AutoFarmingBot:
             # --- Conversation Handlers ---
             set_content_conv = ConversationHandler(
                 entry_points=[CallbackQueryHandler(user_commands.set_content_start, pattern='^set_content:.*$')],
-                states={user_commands.SETTING_AD_CONTENT: [MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO, user_commands.set_content_receive)]},
+                states={
+                    user_commands.SETTING_AD_CONTENT: [
+                        MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO, user_commands.set_content_receive),
+                        CallbackQueryHandler(user_commands.handle_content_category_selection, pattern='^category:.*$')
+                    ]
+                },
                 fallbacks=[CommandHandler('cancel', user_commands.cancel_conversation)],
-                per_chat=True
+                per_chat=True,
+                per_message=False,  # Changed to False to allow MessageHandler
+                per_user=False
             )
             set_schedule_conv = ConversationHandler(
                 entry_points=[CallbackQueryHandler(user_commands.set_schedule_start, pattern='^set_schedule:.*$')],
                 states={user_commands.SETTING_AD_SCHEDULE: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_commands.set_schedule_receive)]},
                 fallbacks=[CommandHandler('cancel', user_commands.cancel_conversation)],
-                per_chat=True
+                per_chat=True,
+                per_message=False,
+                per_user=False
             )
             set_destinations_conv = ConversationHandler(
                 entry_points=[CallbackQueryHandler(user_commands.set_destinations_start, pattern='^set_dests:.*$')],
                 states={user_commands.SETTING_AD_DESTINATIONS: [CallbackQueryHandler(user_commands.select_destination_category, pattern='^select_category:.*$')]},
                 fallbacks=[CommandHandler('cancel', user_commands.cancel_conversation)],
-                per_chat=True
+                per_chat=True,
+                per_message=False,
+                per_user=False
             )
             
-            # Add conversation handlers
-            self.app.add_handler(set_content_conv)
-            self.app.add_handler(set_schedule_conv)
-            self.app.add_handler(set_destinations_conv)
-            logger.info("Conversation handlers configured")
-
             # --- Main Commands ---
             self.app.add_handler(CommandHandler("my_ads", user_commands.my_ads_command))
             self.app.add_handler(CommandHandler("start", user_commands.start))
@@ -172,7 +184,23 @@ class AutoFarmingBot:
             self.app.add_handler(CommandHandler("subscribe", user_commands.subscribe))
             self.app.add_handler(CommandHandler("analytics", user_commands.analytics_command))
             self.app.add_handler(CommandHandler("referral", user_commands.referral_command))
+            self.app.add_handler(CommandHandler("status", user_commands.status))
+            # Bulk add groups command for admins
+            self.app.add_handler(CommandHandler("bulk_add_groups", admin_commands.bulk_add_groups))
+            # Built-in health checks (no terminal needed)
+            self.app.add_handler(CommandHandler("system_check", admin_commands.system_check))
+            self.app.add_handler(CommandHandler("scheduler_check", admin_commands.scheduler_check))
+            self.app.add_handler(CommandHandler("schema_check", admin_commands.schema_check))
+            self.app.add_handler(CommandHandler("fix_payment", admin_commands.fix_payment))
+            self.app.add_handler(CommandHandler("test_pricing", admin_commands.test_pricing))
+            self.app.add_handler(CommandHandler("delete_test_user", admin_commands.delete_test_user))
             logger.info("Main command handlers configured")
+            
+            # --- Forwarding Commands ---
+            self.app.add_handler(CommandHandler("add_destination", forwarding_commands.add_destination_command))
+            self.app.add_handler(CommandHandler("list_destinations", forwarding_commands.list_destinations))
+            self.app.add_handler(CommandHandler("remove_destination", forwarding_commands.remove_destination))
+            logger.info("Forwarding command handlers configured")
             
             # --- Admin Commands ---
             self.app.add_handler(CommandHandler("add_group", admin_commands.add_group))
@@ -183,7 +211,24 @@ class AutoFarmingBot:
             self.app.add_handler(CommandHandler("verify_payment", admin_commands.verify_payment))
             self.app.add_handler(CommandHandler("revenue_stats", admin_commands.revenue_stats))
             self.app.add_handler(CommandHandler("pending_payments", admin_commands.pending_payments))
+            self.app.add_handler(CommandHandler("worker_status", admin_commands.worker_status))
+            self.app.add_handler(CommandHandler("admin_warnings", admin_commands.admin_warnings))
+            self.app.add_handler(CommandHandler("increase_limits", admin_commands.increase_worker_limits))
+            self.app.add_handler(CommandHandler("capacity_check", admin_commands.worker_capacity_check))
+            self.app.add_handler(CommandHandler("activate_subscription", admin_commands.activate_subscription))
+            self.app.add_handler(CommandHandler("list_users", admin_commands.list_users))
+            self.app.add_handler(CommandHandler("test_admin", admin_commands.test_admin))
+            self.app.add_handler(CommandHandler("fix_user_slots", admin_commands.fix_user_slots))
+            self.app.add_handler(CommandHandler("failed_groups", admin_commands.failed_groups))
+            self.app.add_handler(CommandHandler("retry_group", admin_commands.retry_group))
+            self.app.add_handler(CommandHandler("paused_slots", admin_commands.paused_slots))
             logger.info("Admin command handlers configured")
+
+            # --- Conversation Handlers (must be before general callback handler) ---
+            self.app.add_handler(set_content_conv)
+            self.app.add_handler(set_schedule_conv)
+            self.app.add_handler(set_destinations_conv)
+            logger.info("Conversation handlers configured")
 
             # --- General Callback Handler for other buttons ---
             self.app.add_handler(CallbackQueryHandler(self.handle_callback))
@@ -191,6 +236,9 @@ class AutoFarmingBot:
             # --- Error Handler ---
             self.app.add_error_handler(self.error_handler)
             logger.info("Error handler configured")
+
+            # --- Admin Text Input Handler for inline flows (non-blocking) ---
+            self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_commands.handle_admin_text, block=False))
             
         except Exception as e:
             logger.error(f"Error setting up handlers: {e}")
@@ -214,17 +262,44 @@ class AutoFarmingBot:
                 
             data = query.data
             
+            # Add small delay to prevent rapid-fire requests
+            await asyncio.sleep(0.1)
+            
             # Route callbacks to appropriate handlers
             if data.startswith("manage_slot:") or data == "back_to_slots" or data.startswith("toggle_ad:"):
                 await user_commands.handle_ad_slot_callback(update, context)
-            elif data.startswith("subscribe:") or data.startswith("pay:") or data.startswith("check_payment:"):
+            elif data.startswith("subscribe:") or data.startswith("pay:") or data.startswith("check_payment:") or data.startswith("cancel_payment:") or data.startswith("copy_address:"):
                 await user_commands.handle_subscription_callback(update, context)
             elif data.startswith("cmd:"):
                 await user_commands.handle_command_callback(update, context)
+            elif data.startswith("crypto:"):
+                await user_commands.handle_crypto_selection_callback(update, context)
             elif data.startswith("select_category:"):
                 await user_commands.select_destination_category(update, context)
+            elif data.startswith("remove_dest:"):
+                await forwarding_commands.handle_remove_destination_callback(update, context)
+            elif data.startswith("dest:"):
+                await forwarding_commands.handle_destinations_callback(update, context)
             elif data.startswith("admin:"):
                 await self._handle_admin_callback(update, context, data)
+            elif data == "compare_plans":
+                await user_commands.compare_plans_callback(update, context)
+            elif data == "help":
+                await user_commands.help_command_callback(update, context)
+            elif data.startswith("slot:"):
+                await user_commands.handle_ad_slot_callback(update, context)
+            elif data.startswith("category:"):
+                # Parse category callback data: category:{slot_id}:{category}
+                parts = data.split(":")
+                if len(parts) == 3:
+                    slot_id = parts[1]
+                    category = parts[2]
+                    await user_commands.handle_category_selection(update, context, slot_id, category)
+                else:
+                    await query.answer("Invalid category selection")
+                    logger.warning(f"Invalid category callback data: {data}")
+            elif data.startswith("cancel_payment:") or data.startswith("copy_address:") or data.startswith("check_payment:"):
+                await user_commands.handle_subscription_callback(update, context)
             else:
                 await query.answer("This feature is coming soon!")
                 logger.warning(f"Unknown callback data: {data}")
@@ -264,6 +339,25 @@ class AutoFarmingBot:
                 await admin_commands.posting_service_status(update, context)
             elif action == "service_config":
                 await update.callback_query.answer("Service configuration coming soon!")
+            elif (
+                action.startswith("edit_group_cat") or
+                action.startswith("set_group_cat") or
+                action.startswith("edit_group_cat_custom") or
+                action.startswith("remove_group") or
+                action.startswith("purge_menu") or
+                action.startswith("purge_category") or
+                action.startswith("confirm_purge_category") or
+                action.startswith("purge_group") or
+                action == "purge_all_groups" or
+                action == "confirm_purge_all" or
+                action == "back_to_groups" or
+                action == "add_to_category_menu" or
+                action.startswith("add_to_category") or
+                action.startswith("list_cat") or
+                action.startswith("show_admin_all") or
+                action.startswith("delete_user")
+            ):
+                await admin_commands.handle_admin_callback(update, context, action, data.split(":"))
             else:
                 logger.warning(f"Unknown admin action: {action}")
                 await update.callback_query.answer("Unknown admin action")
@@ -298,33 +392,54 @@ class AutoFarmingBot:
                 
         except Exception as e:
             logger.error(f"Error in error handler: {e}")
+            
+    async def _rate_limit_check(self, user_id: int) -> bool:
+        """Simple rate limiting to prevent spam."""
+        current_time = datetime.now().timestamp()
+        
+        if not hasattr(self, '_user_last_command'):
+            self._user_last_command = {}
+            
+        if user_id in self._user_last_command:
+            time_diff = current_time - self._user_last_command[user_id]
+            if time_diff < 1.0:  # 1 second between commands
+                return False
+                
+        self._user_last_command[user_id] = current_time
+        return True
 
     async def post_init(self, app: Application):
         logger.info("Initializing bot services...")
         try:
             await asyncio.wait_for(self.db.initialize(), timeout=30.0)
             
-            # Initialize worker manager if available
-            if self.worker_manager:
-                await asyncio.wait_for(self.worker_manager.initialize_workers(), timeout=30.0)
-                logger.info("Worker manager initialized successfully!")
+            # Check if external scheduler is running (disable internal components)
+            disable_internal = os.getenv('DISABLE_INTERNAL_POSTING_SERVICE', '0') == '1'
             
-            # Initialize payment processor if available
-            if self.payment_processor:
-                await asyncio.wait_for(self.payment_processor.initialize(), timeout=30.0)
-                logger.info("Payment processor initialized successfully!")
-            
-            # Initialize and start posting service if available
-            if self.posting_service:
-                await asyncio.wait_for(self.posting_service.initialize(), timeout=30.0)
-                logger.info("Posting service initialized successfully!")
+            if disable_internal:
+                logger.info("External scheduler detected - skipping internal worker/posting initialization")
+            else:
+                # Initialize worker manager if available
+                if self.worker_manager:
+                    await asyncio.wait_for(self.worker_manager.initialize_workers(), timeout=30.0)
+                    logger.info("Worker manager initialized successfully!")
                 
-                # Start posting service as background task
-                try:
-                    asyncio.create_task(self.posting_service.start_service())
-                    logger.info("Posting service started as background task!")
-                except Exception as e:
-                    logger.error(f"Failed to start posting service: {e}")
+                # Initialize payment processor if available
+                if self.payment_processor:
+                    await asyncio.wait_for(self.payment_processor.initialize(), timeout=30.0)
+                    logger.info("Payment processor initialized successfully!")
+                
+                # Initialize and start posting service if available and not disabled
+                if self.posting_service:
+                    await asyncio.wait_for(self.posting_service.initialize(), timeout=30.0)
+                    logger.info("Posting service initialized successfully!")
+                    
+                    # Start posting service as background task
+                    try:
+                        asyncio.create_task(self.posting_service.start_service())
+                        logger.info("Posting service started as background task!")
+                    except Exception as e:
+                        logger.error(f"Failed to start posting service: {e}")
             
             logger.info("Bot initialization complete!")
         except asyncio.TimeoutError:
@@ -337,32 +452,36 @@ class AutoFarmingBot:
     async def shutdown(self, app: Application):
         logger.info("Shutting down bot...")
         try:
-            # Close worker connections if available
-            if self.worker_manager:
-                try:
-                    await asyncio.wait_for(self.worker_manager.close_all_workers(), timeout=10.0)
-                    logger.info("Worker manager closed successfully!")
-                except Exception as e:
-                    logger.warning(f"Error closing worker manager: {e}")
+            # Check if external scheduler is running
+            disable_internal = os.getenv('DISABLE_INTERNAL_POSTING_SERVICE', '0') == '1'
             
-            # Close payment processor if available
-            if self.payment_processor:
-                try:
-                    await asyncio.wait_for(self.payment_processor.close(), timeout=10.0)
-                    logger.info("Payment processor closed successfully!")
-                except Exception as e:
-                    logger.warning(f"Error closing payment processor: {e}")
-            
-            # Stop posting service if available
-            if self.posting_service:
-                try:
-                    if hasattr(self.posting_service, 'stop'):
-                        await asyncio.wait_for(self.posting_service.stop(), timeout=10.0)
+            if not disable_internal:
+                # Close worker connections if available
+                if self.worker_manager:
+                    try:
+                        await asyncio.wait_for(self.worker_manager.close_all_workers(), timeout=10.0)
+                        logger.info("Worker manager closed successfully!")
+                    except Exception as e:
+                        logger.warning(f"Error closing worker manager: {e}")
+                
+                # Close payment processor if available
+                if self.payment_processor:
+                    try:
+                        await asyncio.wait_for(self.payment_processor.close(), timeout=10.0)
+                        logger.info("Payment processor closed successfully!")
+                    except Exception as e:
+                        logger.warning(f"Error closing payment processor: {e}")
+                
+                # Stop posting service if available
+                if self.posting_service:
+                    try:
+                        # Properly stop the async posting service
+                        await asyncio.wait_for(self.posting_service.stop_service(), timeout=10.0)
                         logger.info("Posting service stopped successfully!")
-                    else:
-                        logger.warning("Posting service has no stop method")
-                except Exception as e:
-                    logger.warning(f"Error stopping posting service: {e}")
+                    except Exception as e:
+                        logger.warning(f"Error stopping posting service: {e}")
+            else:
+                logger.info("External scheduler mode - skipping internal component shutdown")
             
             await asyncio.wait_for(self.db.close(), timeout=10.0)
         except asyncio.TimeoutError:
@@ -377,6 +496,26 @@ class AutoFarmingBot:
             logger.error("Lock file exists. Another instance may be running. Exiting.")
             return
         try:
+            # Remove stale lock if process is not running
+            if os.path.exists(lock_file):
+                try:
+                    with open(lock_file, 'r') as f:
+                        pid_str = f.read().strip()
+                    if pid_str.isdigit():
+                        pid = int(pid_str)
+                        if pid != os.getpid():
+                            try:
+                                os.kill(pid, 0)
+                                logger.error("Another instance appears to be running. Exiting.")
+                                return
+                            except OSError:
+                                logger.warning("Stale lock detected. Removing.")
+                                os.remove(lock_file)
+                except Exception:
+                    logger.warning("Could not verify existing lock. Removing to proceed.")
+                    try: os.remove(lock_file)
+                    except Exception: pass
+
             with open(lock_file, "w") as f: f.write(str(os.getpid()))
             self.setup_handlers()
             self.app.post_init = self.post_init

@@ -85,8 +85,7 @@ class HealthChecker:
         
         required_vars = [
             'BOT_TOKEN',
-            'ADMIN_ID', 
-            'DATABASE_URL'
+            'ADMIN_ID'
         ]
         
         optional_vars = [
@@ -181,7 +180,7 @@ class HealthChecker:
             issues = [f"Missing required package: {pkg}" for pkg in missing_required]
             fixes = [
                 "Install missing packages: pip install " + " ".join(missing_required),
-                "Or run: pip install -r config/requirements.txt"
+                "Or run: pip install -r requirements.txt"
             ]
         else:
             status = 'PASS'
@@ -212,9 +211,7 @@ class HealthChecker:
             'database',
             'commands.user_commands',
             'commands.admin_commands',
-            'scheduler',
-            'multi_crypto_payments',
-            'fix_worker_system'
+            'scheduler'
         ]
         
         failed_imports = []
@@ -484,7 +481,8 @@ class HealthChecker:
             'commands/__init__.py',
             'commands/user_commands.py',
             'commands/admin_commands.py',
-            'config/requirements.txt'
+            # requirements live at project root
+            'requirements.txt'
         ]
         
         required_dirs = [

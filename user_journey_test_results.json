@@ -1,0 +1,93 @@
+{
+  "timestamp": "2025-08-12T14:47:19.703868",
+  "test": "complete_user_journey",
+  "steps": {
+    "start_command": {
+      "success": true,
+      "user_exists": true,
+      "has_subscription": true,
+      "subscription_tier": "basic"
+    },
+    "subscription_selection": {
+      "success": true,
+      "available_tiers": [
+        "basic",
+        "pro",
+        "enterprise"
+      ],
+      "tier_configs": {
+        "basic": {
+          "price": 9.99,
+          "duration_days": 30,
+          "ad_slots": 1
+        },
+        "pro": {
+          "price": 39.99,
+          "duration_days": 30,
+          "ad_slots": 5
+        },
+        "enterprise": {
+          "price": 99.99,
+          "duration_days": 30,
+          "ad_slots": 15
+        }
+      }
+    },
+    "payment_system": {
+      "success": true,
+      "available_cryptos": [
+        "TON",
+        "BTC",
+        "ETH",
+        "SOL",
+        "LTC"
+      ],
+      "qr_available": true,
+      "pil_available": true,
+      "payment_validation": true
+    },
+    "ad_creation": {
+      "success": true,
+      "slots_available": 1,
+      "content_update_working": true,
+      "destinations_count": 17,
+      "managed_groups_count": 18
+    },
+    "scheduler_integration": {
+      "success": true,
+      "active_slots": 2,
+      "available_workers": 2,
+      "posting_service_available": true,
+      "rotation_available": true
+    },
+    "analytics": {
+      "success": true,
+      "user_stats_available": true,
+      "bot_stats_available": false,
+      "warnings_count": 10
+    }
+  },
+  "overall_success": true,
+  "dependencies": {
+    "missing_required": [],
+    "missing_optional": [
+      "requests",
+      "redis",
+      "cryptography"
+    ],
+    "all_required_available": true
+  },
+  "environment": {
+    "missing_required": [],
+    "missing_optional": [
+      "USDT_ADDRESS",
+      "USDC_ADDRESS",
+      "ADA_ADDRESS",
+      "TRX_ADDRESS"
+    ],
+    "bot_token_set": true,
+    "admin_id_set": true,
+    "database_url_set": true
+  },
+  "issues": []
+}

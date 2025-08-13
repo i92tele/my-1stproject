@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Worker Client
-Individual worker account management and Telegram client handling
+Enhanced Worker Client
+Individual worker account management with advanced group joining capabilities
 """
 
 import asyncio
@@ -10,14 +10,14 @@ import os
 from typing import Optional, Dict, Any, List
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError
-from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.channels import JoinChannelRequest, GetParticipantRequest
 from telethon.tl.functions.messages import SendMessageRequest
 from telethon.errors import InviteRequestSentError, UserPrivacyRestrictedError
 
 logger = logging.getLogger(__name__)
 
-class WorkerClient:
-    """Individual worker client for Telegram operations."""
+class EnhancedWorkerClient:
+    """Enhanced worker client for Telegram operations with smart group joining."""
     
     def __init__(self, api_id: str, api_hash: str, phone: str, session_file: str, worker_id: int = None):
         self.worker_id = worker_id
@@ -74,23 +74,6 @@ class WorkerClient:
         except Exception as e:
             logger.error(f"Worker {self.worker_id}: Failed to send message: {e}")
             return False
-            
-    async def join_channel(self, channel_username: str) -> bool:
-        """Join a channel."""
-        if not self.is_connected:
-            return False
-            
-        try:
-            await self.client(JoinChannelRequest(channel_username))
-            return True
-        except InviteRequestSentError:
-            logger.info(f"Worker {self.worker_id}: Join request sent for {channel_username}")
-            return True
-        except Exception as e:
-            logger.error(f"Worker {self.worker_id}: Failed to join {channel_username}: {e}")
-            return False
-
-
 
     async def is_member_of_channel(self, channel_username: str) -> bool:
         """Check if worker is already a member of a channel."""
@@ -98,8 +81,6 @@ class WorkerClient:
             return False
             
         try:
-            from telethon.tl.functions.channels import GetParticipantRequest
-            
             # Get the channel entity
             entity = await self.client.get_entity(channel_username)
             
@@ -123,13 +104,13 @@ class WorkerClient:
         if not self.is_connected:
             return {'success': False, 'reason': 'not_connected', 'method': None}
         
-        # Check join rate limits
-        if not self._can_attempt_join():
-            return {'success': False, 'reason': 'join_limit_exceeded', 'method': None}
-        
         # Check if already a member
         if await self.is_member_of_channel(channel_username):
             return {'success': True, 'reason': 'already_member', 'method': 'check'}
+        
+        # Check join limits
+        if not self._can_attempt_join():
+            return {'success': False, 'reason': 'join_limit_exceeded', 'method': None}
         
         # Try different join formats
         join_formats = self._get_join_formats(channel_username)
@@ -153,40 +134,10 @@ class WorkerClient:
             except Exception as e:
                 error_text = str(e).lower()
                 logger.debug(f"Worker {self.worker_id}: Failed to join {channel_username} with {format_variant}: {e}")
-                # Add delay between format attempts
-                await asyncio.sleep(2)
                 continue
         
         # If all formats failed
         return {'success': False, 'reason': 'all_formats_failed', 'method': None}
-
-    def _can_attempt_join(self) -> bool:
-        """Check if worker can attempt to join a group (rate limiting)."""
-        from datetime import datetime, timedelta
-        
-        now = datetime.now()
-        
-        # Reset daily counter if it's a new day
-        if self.last_join_attempt:
-            if now.date() > self.last_join_attempt.date():
-                self.join_attempts_today = 0
-        
-        # Check daily limit (3 joins per day per worker)
-        if self.join_attempts_today >= 3:
-            return False
-        
-        # Check hourly limit (1 join per hour per worker)
-        if self.last_join_attempt:
-            if now - self.last_join_attempt < timedelta(hours=1):
-                return False
-        
-        return True
-
-    def _record_join_attempt(self):
-        """Record a join attempt for rate limiting."""
-        from datetime import datetime
-        self.last_join_attempt = datetime.now()
-        self.join_attempts_today += 1
 
     def _get_join_formats(self, channel_username: str) -> List[str]:
         """Get different formats to try for joining."""
@@ -225,6 +176,34 @@ class WorkerClient:
         
         return formats
 
+    def _can_attempt_join(self) -> bool:
+        """Check if worker can attempt to join a group (rate limiting)."""
+        from datetime import datetime, timedelta
+        
+        now = datetime.now()
+        
+        # Reset daily counter if it's a new day
+        if self.last_join_attempt:
+            if now.date() > self.last_join_attempt.date():
+                self.join_attempts_today = 0
+        
+        # Check daily limit (3 joins per day)
+        if self.join_attempts_today >= 3:
+            return False
+        
+        # Check hourly limit (1 join per hour)
+        if self.last_join_attempt:
+            if now - self.last_join_attempt < timedelta(hours=1):
+                return False
+        
+        return True
+
+    def _record_join_attempt(self):
+        """Record a join attempt for rate limiting."""
+        from datetime import datetime
+        self.last_join_attempt = datetime.now()
+        self.join_attempts_today += 1
+
     async def get_channel_info(self, channel_username: str) -> Dict[str, Any]:
         """Get basic information about a channel."""
         if not self.is_connected:
@@ -253,5 +232,7 @@ class WorkerClient:
             'is_connected': self.is_connected,
             'is_banned': self.is_banned,
             'last_activity': self.last_activity,
+            'last_join_attempt': self.last_join_attempt,
+            'join_attempts_today': self.join_attempts_today,
             'session_file': self.session_file
         }

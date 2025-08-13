@@ -37,7 +37,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("❌ Error: Database not available")
             return
         
-        # Create or update user in database
+        # Create or update user in database (preserves subscription via UPSERT)
         await db.create_or_update_user(
             user_id=user.id,
             username=user.username,
@@ -48,11 +48,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Get user subscription info
         subscription = await db.get_user_subscription(user.id)
         subscription_info = None
-        if subscription and subscription.get('subscription_expires'):
+        if subscription and subscription.get('expires'):
             from datetime import datetime
-            days_left = (subscription['subscription_expires'] - datetime.now()).days
+            # subscription['expires'] may be a string or datetime depending on sqlite adapter
+            expires_value = subscription['expires']
+            if isinstance(expires_value, str):
+                try:
+                    # Try ISO format first
+                    expires_dt = datetime.fromisoformat(expires_value)
+                except Exception:
+                    # Fallback: try parsing common sqlite timestamp format
+                    try:
+                        from datetime import datetime as _dt
+                        expires_dt = _dt.strptime(expires_value, "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        expires_dt = datetime.now()
+            else:
+                expires_dt = expires_value
+            days_left = max(0, (expires_dt - datetime.now()).days)
             subscription_info = {
-                'tier': subscription.get('subscription_tier', 'basic'),
+                'tier': subscription.get('tier', 'basic'),
                 'days_left': max(0, days_left)
             }
         
@@ -60,9 +75,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         welcome_text = f"🤖 *Welcome to AutoFarming Bot, {user.first_name}!*\n\n"
         welcome_text += "I'm here to help you manage your automated advertising campaigns.\n\n"
         
-        if subscription_info:
-            welcome_text += f"📊 *Your Subscription:* {subscription_info['tier'].title()}\n"
-            welcome_text += f"⏰ *Days Remaining:* {subscription_info['days_left']}\n\n"
+        if subscription and subscription.get('is_active'):
+            tier = (subscription.get('tier') or 'basic').title()
+            if subscription_info:
+                welcome_text += f"📊 *Your Subscription:* {tier}\n"
+                welcome_text += f"⏰ *Days Remaining:* {subscription_info['days_left']}\n\n"
+            else:
+                welcome_text += f"📊 *Your Subscription:* {tier}\n\n"
         else:
             welcome_text += "💎 *No active subscription*\n\n"
         
@@ -202,15 +221,25 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return
         
         # Get user slots for basic analytics
-        slots = await db.get_user_slots(user_id)
-        if not slots:
-            await update.message.reply_text("❌ No ad slots found. Create some ads first!")
+        try:
+            slots = await db.get_or_create_ad_slots(user_id, subscription.get('tier', 'basic'))
+            if not slots:
+                await update.message.reply_text("❌ No ad slots found. Create some ads first!")
+                return
+            
+            # Create basic analytics message
+            total_slots = len(slots)
+            active_slots = sum(1 for slot in slots if slot.get('is_active'))
+            
+            # Get destinations for each slot
+            total_destinations = 0
+            for slot in slots:
+                slot_destinations = await db.get_destinations_for_slot(slot.get('id'))
+                total_destinations += len(slot_destinations) if slot_destinations else 0
+        except Exception as slot_err:
+            logger.error(f"Error getting user slots: {slot_err}")
+            await update.message.reply_text("❌ Error loading ad slots. Please try again.")
             return
-        
-        # Create basic analytics message
-        total_slots = len(slots)
-        active_slots = sum(1 for slot in slots if slot.get('is_active'))
-        total_destinations = sum(len(slot.get('destinations', [])) for slot in slots)
         
         message = f"""📊 **Your Analytics**
 
@@ -285,11 +314,11 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Create enhanced subscription plans keyboard
     keyboard = [
         [
-            InlineKeyboardButton("🥉 Basic - $9.99", callback_data="subscribe:basic"),
-            InlineKeyboardButton("🥈 Pro - $19.99", callback_data="subscribe:pro")
+            InlineKeyboardButton("🥉 Basic - $15", callback_data="subscribe:basic"),
+            InlineKeyboardButton("🥈 Pro - $45", callback_data="subscribe:pro")
         ],
         [
-            InlineKeyboardButton("🥇 Enterprise - $29.99", callback_data="subscribe:enterprise")
+            InlineKeyboardButton("🥇 Enterprise - $75", callback_data="subscribe:enterprise")
         ],
         [
             InlineKeyboardButton("📊 Compare Plans", callback_data="compare_plans"),
@@ -306,10 +335,10 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚀 **AutoFarming Pro - Subscription Plans**\n\n"
         f"{status_text}\n\n"
         "**Choose your plan:**\n"
-        "• **🥉 Basic** ($9.99): 1 ad slot, hourly posting\n"
-        "• **🥈 Pro** ($19.99): 3 ad slots, ban protection\n"
-        "• **🥇 Enterprise** ($29.99): 5 ad slots, auto-renewal\n\n"
-        "*Competitive pricing - 25-67% cheaper than competitors!*\n\n"
+        "• **🥉 Basic** ($15): 1 ad slot, 10 destinations\n"
+        "• **🥈 Pro** ($45): 3 ad slots, 10 destinations each\n"
+        "• **🥇 Enterprise** ($75): 5 ad slots, 10 destinations each\n\n"
+        "*30-day subscription with multi-crypto payment support*\n\n"
         "Select a plan to proceed with payment:"
     )
     
@@ -323,43 +352,36 @@ async def handle_subscription_callback(update: Update, context: ContextTypes.DEF
     
     if query.data.startswith("subscribe:"):
         tier = query.data.split(":")[1]
-        
-        # Create payment buttons for the new system
-        keyboard = [
-            [InlineKeyboardButton("💎 Basic - $15", callback_data="pay:basic")],
-            [InlineKeyboardButton("💎 Pro - $45", callback_data="pay:pro")],
-            [InlineKeyboardButton("💎 Enterprise - $75", callback_data="pay:enterprise")]
-        ]
-        
-        message_text = (
-            "💎 **Subscription Plans**\n\n"
-            "**Basic Plan** - $15/month\n"
-            "• 1 ad slot\n"
-            "• 10 destinations per slot\n"
-            "• 30-day subscription\n\n"
-            "**Pro Plan** - $45/month\n"
-            "• 3 ad slots\n"
-            "• 10 destinations per slot\n"
-            "• 30-day subscription\n\n"
-            "**Enterprise Plan** - $75/month\n"
-            "• 5 ad slots\n"
-            "• 10 destinations per slot\n"
-            "• 30-day subscription\n\n"
-            "💳 **Payment via TON cryptocurrency**"
-        )
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        # Go directly to crypto selection - no duplicate menu
+        await show_crypto_selection(update, context, tier)
     
     elif query.data.startswith("pay:"):
         # Handle new payment format: pay:{tier}
         tier = query.data.split(":")[1]
-        await handle_payment_callback(update, context, tier)
+        await show_crypto_selection(update, context, tier)
+    
+    elif query.data.startswith("crypto:"):
+        # Handle crypto selection: crypto:{tier}:{crypto_type}
+        parts = query.data.split(":")
+        if len(parts) == 3:
+            tier = parts[1]
+            crypto_type = parts[2]
+            await handle_crypto_selection(update, context, tier, crypto_type)
     
     elif query.data.startswith("check_payment:"):
         # Handle payment status check
         payment_id = query.data.split(":")[1]
         await check_payment_status_callback(update, context, payment_id)
+    
+    elif query.data.startswith("cancel_payment:"):
+        # Handle payment cancellation
+        payment_id = query.data.split(":")[1]
+        await cancel_payment_callback(update, context, payment_id)
+    
+    elif query.data.startswith("copy_address:"):
+        # Handle address copy
+        crypto_type = query.data.split(":")[1]
+        await copy_address_callback(update, context, crypto_type)
     
     elif query.data == "compare_plans":
         await compare_plans_callback(update, context)
@@ -368,11 +390,273 @@ async def handle_subscription_callback(update: Update, context: ContextTypes.DEF
     elif query.data.startswith("slot_analytics:"):
         slot_id = query.data.split(":")[1]
         await slot_analytics_callback(update, context, slot_id)
+    elif query.data.startswith("category:"):
+        # Handle category selection: category:{slot_id}:{category}
+        parts = query.data.split(":")
+        if len(parts) == 3:
+            slot_id = parts[1]
+            category = parts[2]
+            await handle_category_selection(update, context, slot_id, category)
+
+async def show_crypto_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, tier: str):
+    """Show cryptocurrency selection interface."""
+    query = update.callback_query
+    
+    try:
+        # Define supported cryptocurrencies directly (no price fetching)
+        cryptos = {
+            'BTC': {'symbol': 'BTC', 'name': 'Bitcoin'},
+            'ETH': {'symbol': 'ETH', 'name': 'Ethereum'},
+            'USDT': {'symbol': 'USDT', 'name': 'Tether USD'},
+            'USDC': {'symbol': 'USDC', 'name': 'USD Coin'},
+            'TON': {'symbol': 'TON', 'name': 'Toncoin'}
+        }
+        
+        # Create crypto selection keyboard (without prices)
+        keyboard = []
+        for crypto_type, crypto_data in cryptos.items():
+            button_text = f"{crypto_data['symbol']}"
+            callback_data = f"crypto:{tier}:{crypto_type}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        
+        # Add back button
+        keyboard.append([InlineKeyboardButton("🔙 Back to Plans", callback_data="cmd:subscribe")])
+        
+        message_text = (
+            f"💎 **Choose Payment Method**\n\n"
+            f"**Selected Plan:** {tier.title()}\n\n"
+            "Select your preferred cryptocurrency:\n\n"
+            "*All payments are processed securely*"
+        )
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+    except Exception as e:
+        context.bot_data['logger'].error(f"Error showing crypto selection: {e}")
+        await query.edit_message_text(
+            "❌ Error loading payment options. Please try again.",
+            parse_mode='Markdown'
+        )
+
+async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, slot_id: str, category: str):
+    """Handle category selection for ad slot."""
+    query = update.callback_query
+    
+    try:
+        # Update the ad slot with the selected category
+        db = context.bot_data['db']
+        success = await db.update_slot_category(int(slot_id), category)
+        
+        if success:
+            # Store the slot_id in user_data for the conversation
+            context.user_data['current_slot_id'] = int(slot_id)
+            
+            # Show content input prompt
+            await query.edit_message_text(
+                f"📝 **Set Ad Content**\n\n"
+                f"Category: **{category.title()}**\n\n"
+                f"Please send me the content for your ad.\n\n"
+                f"You can send:\n"
+                f"• Text message\n"
+                f"• Photo with caption\n"
+                f"• Video with caption\n\n"
+                f"Use /cancel to go back.",
+                parse_mode='Markdown'
+            )
+            # Note: This function is called from the main callback handler, 
+            # not from within a conversation, so we can't return a conversation state here
+        else:
+            await query.edit_message_text(
+                "❌ Error setting category. Please try again.",
+                parse_mode='Markdown'
+            )
+            
+    except Exception as e:
+        context.bot_data['logger'].error(f"Error handling category selection: {e}")
+        await query.edit_message_text(
+            "❌ Error setting category. Please try again."
+        )
+
+async def send_payment_qr_code(query, crypto_type: str, payment_request: dict) -> bool:
+    """Generate and send a QR code for the payment."""
+    try:
+        import qrcode
+        from io import BytesIO
+        
+        # Create QR code data based on crypto type
+        if crypto_type == 'TON':
+            # TON deep link with amount and comment
+            amount_nano = int(payment_request['amount_crypto'] * 1e9)
+            address = payment_request.get('pay_to_address', '')
+            comment = payment_request.get('payment_memo', payment_request['payment_id'])
+            qr_data = f"ton://transfer/{address}?amount={amount_nano}&text={comment}"
+        elif crypto_type == 'BTC':
+            # Bitcoin URI with amount
+            address = payment_request.get('pay_to_address', '')
+            amount = payment_request['amount_crypto']
+            qr_data = f"bitcoin:{address}?amount={amount:.8f}"
+        else:
+            # Generic address for other cryptos
+            qr_data = payment_request.get('pay_to_address', '')
+        
+        # Generate QR code
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(qr_data)
+        qr.make(fit=True)
+        
+        # Create QR code image
+        qr_image = qr.make_image(fill_color="black", back_color="white")
+        
+        # Convert to bytes
+        qr_bytes = BytesIO()
+        qr_image.save(qr_bytes, format='PNG')
+        qr_bytes.seek(0)
+        
+        # Send QR code as photo
+        await query.message.reply_photo(
+            photo=qr_bytes,
+            caption=f"🔗 {crypto_type} Payment QR Code\n\nScan with your {crypto_type} wallet app"
+        )
+        
+        return True
+        
+    except Exception as e:
+        print(f"QR code generation error: {e}")
+        return False
+
+async def handle_crypto_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, tier: str, crypto_type: str):
+    """Handle cryptocurrency selection and create payment."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    db = context.bot_data['db']
+    
+    try:
+        # Get current subscription status
+        subscription = await db.get_user_subscription(user_id)
+        if subscription and subscription['is_active']:
+            await query.edit_message_text(
+                "❌ You already have an active subscription.\n\n"
+                "Use /my_ads to manage your existing ad slots."
+            )
+            return
+        
+        # Create payment request
+        from multi_crypto_payments import MultiCryptoPaymentProcessor
+        payment_processor = MultiCryptoPaymentProcessor(context.bot_data['config'], context.bot_data['db'], context.bot_data['logger'])
+        payment_request = await payment_processor.create_payment_request(
+            user_id=user_id,
+            tier=tier,
+            crypto_type=crypto_type
+        )
+        
+        if payment_request.get('error'):
+            await query.edit_message_text(f"❌ Error creating payment: {payment_request['error']}")
+            return
+        
+        # Create user-friendly keyboard with essential actions
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "✅ I've Sent the Payment", 
+                    callback_data=f"check_payment:{payment_request['payment_id']}"
+                )
+            ],
+            [
+                InlineKeyboardButton("📋 Copy Address", callback_data=f"copy_address:{crypto_type}"),
+                InlineKeyboardButton("🔄 Check Status", callback_data=f"check_payment:{payment_request['payment_id']}")
+            ],
+            [
+                InlineKeyboardButton("❌ Cancel Payment", callback_data=f"cancel_payment:{payment_request['payment_id']}"),
+                InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")
+            ]
+        ]
+
+        # Create a user-friendly payment interface
+        amount_crypto = payment_request.get('amount_crypto', 0)
+        amount_usd = payment_request.get('amount_usd', 0)
+        payment_id = str(payment_request.get('payment_id', 'N/A'))
+        
+        # Generate QR code for the payment
+        qr_code_sent = False
+        try:
+            qr_code_sent = await send_payment_qr_code(query, crypto_type, payment_request)
+        except Exception as qr_error:
+            context.bot_data['logger'].warning(f"QR code generation failed: {qr_error}")
+        
+        # Create simplified text instructions
+        if crypto_type == 'TON':
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_memo = str(payment_request.get('payment_memo', payment_id))
+            
+            text = (
+                f"💎 TON Payment\n"
+                f"Plan: {tier.title()}\n"
+                f"Amount: {amount_crypto:.6f} TON (${amount_usd})\n\n"
+                f"📍 Send to: {pay_to_address}\n"
+                f"💬 Include comment: {payment_memo}\n\n"
+                f"⚠️ The comment is REQUIRED to identify your payment!\n\n"
+                f"📱 Use your TON wallet app to scan the QR code above or copy the address manually."
+            )
+        elif crypto_type == 'BTC':
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            
+            text = (
+                f"₿ Bitcoin Payment\n"
+                f"Plan: {tier.title()}\n"
+                f"Amount: {amount_crypto:.8f} BTC (${amount_usd})\n\n"
+                f"📍 Send to: {pay_to_address}\n\n"
+                f"📱 Use your Bitcoin wallet app to scan the QR code above or copy the address manually."
+            )
+        
+        # Debug: Log the text length and content for troubleshooting
+        context.bot_data['logger'].info(f"Payment text length: {len(text)}, crypto: {crypto_type}, tier: {tier}")
+        
+        try:
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception as text_error:
+            # If text parsing fails, send a simplified message
+            context.bot_data['logger'].error(f"Text parsing failed: {text_error}, trying simplified message")
+            simplified_text = f"💳 {crypto_type} Payment for {tier.title()}\n\nAmount: {amount_crypto:.6f} {crypto_type}\nPayment ID: {payment_id}\n\nUse the button below to proceed with payment."
+            await query.edit_message_text(simplified_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+    except Exception as e:
+        context.bot_data['logger'].error(f"Error in handle_crypto_selection: {e}")
+        await query.edit_message_text(f"❌ Error creating payment: {str(e)}")
+
+async def handle_crypto_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle crypto selection callbacks like crypto:basic:TON."""
+    query = update.callback_query
+    data = query.data
+    
+    try:
+        # Parse callback data: crypto:tier:crypto_type
+        parts = data.split(":")
+        if len(parts) != 3:
+            await query.answer("Invalid selection")
+            return
+            
+        _, tier, crypto_type = parts
+        
+        # Call the existing handle_crypto_selection function
+        await handle_crypto_selection(update, context, tier, crypto_type)
+        
+    except Exception as e:
+        context.bot_data['logger'].error(f"Error in handle_crypto_selection_callback: {e}")
+        await query.edit_message_text("❌ Error processing selection")
 
 async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, tier: str):
     """Handle payment button clicks for new payment system."""
     query = update.callback_query
     user_id = update.effective_user.id
+    
+    # Show cryptocurrency selection first
+    await show_crypto_selection(update, context, tier)
     
     try:
         # Get payment processor from bot data
@@ -436,22 +720,22 @@ async def check_payment_status_callback(update: Update, context: ContextTypes.DE
     query = update.callback_query
     
     try:
-        # Get payment processor from bot data
-        payment_processor = context.bot_data.get('payment_processor')
-        if not payment_processor:
-            await query.edit_message_text("❌ Payment system not available")
-            return
+        # Get payment status using multi-crypto processor
+        from multi_crypto_payments import MultiCryptoPaymentProcessor
+        payment_processor = MultiCryptoPaymentProcessor(context.bot_data['config'], context.bot_data['db'], context.bot_data['logger'])
         
         # Get payment status
         status = await payment_processor.get_payment_status(payment_id)
         
-        if not status['success']:
-            await query.edit_message_text(f"❌ Error checking payment: {status.get('error')}")
+        if status['status'] == 'not_found':
+            await query.edit_message_text(f"❌ Payment not found: {status.get('message')}")
             return
         
-        payment = status['payment']
+        if status['status'] == 'error':
+            await query.edit_message_text(f"❌ Error checking payment: {status.get('message')}")
+            return
         
-        if payment['status'] == 'completed':
+        if status['status'] == 'completed':
             # Payment already completed
             keyboard = [
                 [InlineKeyboardButton("📊 My Status", callback_data="cmd:status")],
@@ -463,79 +747,133 @@ async def check_payment_status_callback(update: Update, context: ContextTypes.DE
                 f"Payment ID: `{payment_id}`\n\n"
                 "You can now use your ad slots."
             )
-        elif payment['status'] == 'pending':
+        elif status['status'] == 'pending':
             # Check if payment has been received
-            verification = await payment_processor.verify_payment(payment_id)
+            verification = await payment_processor.verify_payment_on_blockchain(payment_id)
             
-            if verification.get('payment_verified'):
-                # Process the payment
-                result = await payment_processor.process_successful_payment(payment_id)
-                
-                if result['success']:
-                    keyboard = [
-                        [InlineKeyboardButton("📊 My Status", callback_data="cmd:status")],
-                        [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
-                    ]
-                    text = (
-                        "🎉 **Payment Verified!**\n\n"
-                        f"✅ Subscription activated: **{result['tier'].title()}**\n"
-                        f"📊 Ad slots: {result['slots']}\n"
-                        f"Payment ID: `{payment_id}`\n\n"
-                        "You can now create and manage your ad slots."
-                    )
-                else:
-                    keyboard = [
-                        [InlineKeyboardButton("🔄 Check Again", callback_data=f"check_payment:{payment_id}")],
-                        [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
-                    ]
-                    text = (
-                        "❌ **Payment Processing Failed**\n\n"
-                        f"Payment was received but activation failed.\n"
-                        f"Error: {result.get('error', 'Unknown error')}\n\n"
-                        "Please contact support."
-                    )
+            if verification:
+                # Payment verified - subscription is automatically activated
+                keyboard = [
+                    [InlineKeyboardButton("📊 My Status", callback_data="cmd:status")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
+                ]
+                text = (
+                    "🎉 **Payment Verified!**\n\n"
+                    f"✅ Subscription activated successfully!\n"
+                    f"🆔 Payment ID: `{payment_id}`\n\n"
+                    "You can now use your ad slots!"
+                )
             else:
-                # Payment not yet received
+                # Payment still pending
+                from datetime import datetime
+                check_time = datetime.now().strftime("%H:%M:%S")
                 keyboard = [
                     [InlineKeyboardButton("🔄 Check Again", callback_data=f"check_payment:{payment_id}")],
-                    [InlineKeyboardButton("💳 Pay Again", callback_data=f"pay:{payment.get('tier', 'basic')}")],
+                    [InlineKeyboardButton("❌ Cancel Payment", callback_data=f"cancel_payment:{payment_id}")],
                     [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
                 ]
                 text = (
                     "⏳ **Payment Pending**\n\n"
+                    f"We're still waiting for your payment.\n"
                     f"Payment ID: `{payment_id}`\n"
-                    f"Amount: {payment['amount']} {payment['currency']}\n"
-                    f"Status: {payment['status']}\n\n"
-                    "Please complete the TON transfer and check again."
+                    f"Last checked: {check_time}\n\n"
+                    "Please ensure you sent the correct amount.\n"
+                    "Click 'Check Again' in 30 seconds."
                 )
-        elif payment['status'] == 'expired':
+        elif status['status'] == 'expired':
             keyboard = [
-                [InlineKeyboardButton("💳 Create New Payment", callback_data=f"pay:{payment.get('tier', 'basic')}")],
+                [InlineKeyboardButton("💳 Create New Payment", callback_data="cmd:subscribe")],
                 [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
             ]
             text = (
                 "⏰ **Payment Expired**\n\n"
-                f"Payment ID: `{payment_id}`\n"
-                f"Status: {payment['status']}\n\n"
+                f"Payment ID: `{payment_id}`\n\n"
                 "Please create a new payment request."
             )
         else:
             keyboard = [
-                [InlineKeyboardButton("💳 Create New Payment", callback_data=f"pay:{payment.get('tier', 'basic')}")],
+                [InlineKeyboardButton("💳 Create New Payment", callback_data="cmd:subscribe")],
                 [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
             ]
             text = (
-                f"❓ **Payment Status: {payment['status']}**\n\n"
-                f"Payment ID: `{payment_id}`\n"
-                f"Amount: {payment['amount']} {payment['currency']}\n\n"
+                f"❓ **Payment Status: {status['status']}**\n\n"
+                f"Payment ID: `{payment_id}`\n\n"
                 "Please contact support for assistance."
             )
         
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        # Remove markdown formatting to avoid parsing issues
+        clean_text = text.replace("**", "").replace("`", "")
+        await query.edit_message_text(clean_text, reply_markup=InlineKeyboardMarkup(keyboard))
         
     except Exception as e:
         logger.error(f"Error in check_payment_status_callback: {e}")
         await query.edit_message_text(f"❌ Error checking payment: {str(e)}")
+
+async def cancel_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, payment_id: str):
+    """Cancel a pending payment."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    try:
+        db = context.bot_data['db']
+        
+        # Update payment status to cancelled
+        success = await db.update_payment_status(payment_id, 'cancelled')
+        
+        if success:
+            await query.edit_message_text(
+                f"❌ Payment Cancelled\n\n"
+                f"Payment ID: {payment_id}\n\n"
+                f"You can create a new payment anytime.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💳 New Payment", callback_data="cmd:subscribe")],
+                    [InlineKeyboardButton("📊 My Status", callback_data="cmd:status")]
+                ])
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ Could not cancel payment\n\n"
+                f"Payment ID: {payment_id}\n\n"
+                f"Please try again or contact support."
+            )
+    
+    except Exception as e:
+        logger.error(f"Error in cancel_payment_callback: {e}")
+        await query.edit_message_text(f"❌ Error cancelling payment: {str(e)}")
+
+async def copy_address_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto_type: str):
+    """Show copyable address for manual payment."""
+    import os
+    query = update.callback_query
+    
+    try:
+        # Get the configured address for the crypto type
+        config = context.bot_data['config']
+        
+        if crypto_type == 'TON':
+            address = getattr(config, 'ton_address', '') or os.getenv('TON_ADDRESS', '')
+            network_name = "TON Network"
+        elif crypto_type == 'BTC':
+            address = getattr(config, 'btc_address', '') or os.getenv('BTC_ADDRESS', '')
+            network_name = "Bitcoin Network"
+        else:
+            address = "Address not configured"
+            network_name = crypto_type
+        
+        if address:
+            await query.answer(
+                f"📋 {crypto_type} Address:\n{address}\n\nTap and hold to copy!",
+                show_alert=True
+            )
+        else:
+            await query.answer(
+                f"❌ {crypto_type} address not configured",
+                show_alert=True
+            )
+    
+    except Exception as e:
+        logger.error(f"Error in copy_address_callback: {e}")
+        await query.answer("❌ Error getting address", show_alert=True)
 
 async def get_crypto_prices():
     """Get real-time crypto prices from CoinGecko API."""
@@ -698,8 +1036,39 @@ async def check_payment_status(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.edit_message_text("❌ Error checking payment status. Please try again later.")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Status command placeholder."""
-    await update.message.reply_text("Status feature coming soon! 📊")
+    """Show user status and subscription information."""
+    user_id = update.effective_user.id
+    db = context.bot_data['db']
+    config = context.bot_data.get('config')
+    is_admin = False
+    try:
+        is_admin = config.is_admin(user_id) if config else False
+    except Exception:
+        is_admin = False
+    
+    subscription = await db.get_user_subscription(user_id)
+    logger.info(f"Status check - User {user_id} subscription: {subscription}")
+    
+    if subscription and subscription.get('is_active'):
+        status_text = f"✅ **Active Subscription:** {subscription['tier'].title()}"
+    else:
+        status_text = "❌ **No active subscription**"
+        if subscription:
+            status_text += f"\n📋 **Subscription Data:** {subscription}"
+    
+    message = (
+        f"📊 **Your Status**\n\n"
+        f"**User ID:** `{user_id}`\n"
+        f"{status_text}"
+    )
+    if is_admin:
+        message += (
+            "\n\n"
+            "💡 **Admin hint**\n"
+            "Set in .env if needed:\n"
+            f"`ADMIN_ID={user_id}`"
+        )
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 # --- Main Ad Management Command ---
 
@@ -719,7 +1088,9 @@ async def my_ads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         subscription = await db.get_user_subscription(user_id)
-        if not subscription or not subscription['is_active']:
+        logger.info(f"User {user_id} subscription: {subscription}")
+        
+        if not subscription or not subscription.get('is_active'):
             reply_obj = update.message if update.message else update.callback_query.message
             await reply_obj.reply_text(
                 "❌ You need an active subscription to manage ads.\n\n"
@@ -728,6 +1099,8 @@ async def my_ads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         ad_slots = await db.get_or_create_ad_slots(user_id, subscription['tier'])
+        logger.info(f"User {user_id} ad slots: {ad_slots}")
+        
         if not ad_slots:
             reply_obj = update.message if update.message else update.callback_query.message
             await reply_obj.reply_text("Could not find any ad slots for your subscription tier.")
@@ -850,16 +1223,80 @@ async def set_content_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     slot_id = int(query.data.split(":")[1])
     context.user_data['current_slot_id'] = slot_id
 
+    # Show category selection first
+    keyboard = [
+        [InlineKeyboardButton("💎 Crypto/Finance", callback_data=f"category:{slot_id}:crypto")],
+        [InlineKeyboardButton("💻 Tech/Software", callback_data=f"category:{slot_id}:tech")],
+        [InlineKeyboardButton("🏢 Business/General", callback_data=f"category:{slot_id}:business")],
+        [InlineKeyboardButton("🎯 Marketing/Promotion", callback_data=f"category:{slot_id}:marketing")],
+        [InlineKeyboardButton("🔙 Back", callback_data=f"slot:{slot_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await query.edit_message_text(
         "📝 **Set Ad Content**\n\n"
-        "Please send me the content for your ad.\n\n"
-        "You can send:\n"
-        "• Text message\n"
-        "• Photo with caption\n"
-        "• Video with caption\n\n"
-        "Use /cancel to go back."
+        "First, select the category for your ad:\n\n"
+        "**💎 Crypto/Finance** - Cryptocurrency, trading, financial services\n"
+        "**💻 Tech/Software** - Software, apps, technology services\n"
+        "**🏢 Business/General** - General business, services, products\n"
+        "**🎯 Marketing/Promotion** - Promotional content, offers, deals\n\n"
+        "Choose a category:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
     )
+    
     return SETTING_AD_CONTENT
+
+async def handle_content_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle category selection within the content conversation."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        # Parse callback data: category:{slot_id}:{category}
+        parts = query.data.split(":")
+        if len(parts) != 3:
+            await query.edit_message_text("❌ Invalid category selection. Please try again.")
+            return ConversationHandler.END
+        
+        slot_id = int(parts[1])
+        category = parts[2]
+        
+        # Update the ad slot with the selected category
+        db = context.bot_data['db']
+        success = await db.update_slot_category(slot_id, category)
+        
+        if success:
+            # Store the slot_id in user_data for the conversation
+            context.user_data['current_slot_id'] = slot_id
+            
+            # Show content input prompt
+            await query.edit_message_text(
+                f"📝 **Set Ad Content**\n\n"
+                f"Category: **{category.title()}**\n\n"
+                f"Please send me the content for your ad.\n\n"
+                f"You can send:\n"
+                f"• Text message\n"
+                f"• Photo with caption\n"
+                f"• Video with caption\n\n"
+                f"Use /cancel to go back.",
+                parse_mode='Markdown'
+            )
+            # Continue in the same conversation state to receive the content
+            return SETTING_AD_CONTENT
+        else:
+            await query.edit_message_text(
+                "❌ Error setting category. Please try again.",
+                parse_mode='Markdown'
+            )
+            return ConversationHandler.END
+            
+    except Exception as e:
+        context.bot_data['logger'].error(f"Error handling content category selection: {e}")
+        await query.edit_message_text(
+            "❌ Error setting category. Please try again."
+        )
+        return ConversationHandler.END
 
 async def set_content_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receives and saves the ad content."""
@@ -881,13 +1318,23 @@ async def set_content_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     success = await db.update_ad_slot_content(slot_id, ad_text, ad_file_id)
 
+    # Provide a clear confirmation with navigation
+    keyboard = [
+        [InlineKeyboardButton("⬅️ Back to This Slot", callback_data=f"slot:{slot_id}")],
+        [InlineKeyboardButton("🔙 Back to My Ads", callback_data="cmd:my_ads")]
+    ]
     if success:
-        await update.message.reply_text("✅ Your ad content has been saved successfully!")
+        await update.message.reply_text(
+            "✅ Your ad content has been saved successfully!",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     else:
-        await update.message.reply_text("❌ An error occurred while saving your ad.")
+        await update.message.reply_text(
+            "❌ An error occurred while saving your ad.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
     context.user_data.pop('current_slot_id', None)
-    await my_ads_command(update, context)
     return ConversationHandler.END
 
 # --- Set Schedule Conversation ---
@@ -903,8 +1350,7 @@ async def set_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(
         "🗓️ **Set Posting Schedule**\n\n"
         "How often should this ad be posted?\n\n"
-        "Enter the interval in minutes (30-1440):\n\n"
-        "• 30 = every 30 minutes\n"
+        "Enter the interval in minutes (60-1440):\n\n"
         "• 60 = every hour\n"
         "• 120 = every 2 hours\n"
         "• 1440 = once per day\n\n"
@@ -924,8 +1370,8 @@ async def set_schedule_receive(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         interval = int(update.message.text.strip())
         
-        if interval < 30:
-            await update.message.reply_text("❌ Minimum interval is 30 minutes. Please try again.")
+        if interval < 60:
+            await update.message.reply_text("❌ Minimum interval is 60 minutes. Please try again.")
             return SETTING_AD_SCHEDULE
         elif interval > 1440:
             await update.message.reply_text("❌ Maximum interval is 1440 minutes (24 hours). Please try again.")
@@ -933,28 +1379,38 @@ async def set_schedule_receive(update: Update, context: ContextTypes.DEFAULT_TYP
 
         success = await db.update_ad_slot_schedule(slot_id, interval)
 
+        hours = interval // 60
+        minutes = interval % 60
+        time_str = ""
+        if hours > 0:
+            time_str = f"{hours} hour{'s' if hours != 1 else ''}"
+        if minutes > 0:
+            if time_str:
+                time_str += f" and {minutes} minute{'s' if minutes != 1 else ''}"
+            else:
+                time_str = f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Back to This Slot", callback_data=f"slot:{slot_id}")],
+            [InlineKeyboardButton("🔙 Back to My Ads", callback_data="cmd:my_ads")]
+        ]
+
         if success:
-            hours = interval // 60
-            minutes = interval % 60
-            time_str = ""
-            if hours > 0:
-                time_str = f"{hours} hour{'s' if hours != 1 else ''}"
-            if minutes > 0:
-                if time_str:
-                    time_str += f" and {minutes} minute{'s' if minutes != 1 else ''}"
-                else:
-                    time_str = f"{minutes} minute{'s' if minutes != 1 else ''}"
-            
-            await update.message.reply_text(f"✅ Schedule saved! Your ad will be posted every {time_str}.")
+            await update.message.reply_text(
+                f"✅ Schedule saved! Your ad will be posted every {time_str}.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         else:
-            await update.message.reply_text("❌ An error occurred while saving the schedule.")
+            await update.message.reply_text(
+                "❌ An error occurred while saving the schedule.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
     except ValueError:
         await update.message.reply_text("❌ Please enter a valid number. Use /cancel to go back.")
         return SETTING_AD_SCHEDULE
 
     context.user_data.pop('current_slot_id', None)
-    await my_ads_command(update, context)
     return ConversationHandler.END
 
 # --- Set Destinations Conversation ---
@@ -979,14 +1435,26 @@ async def set_destinations_start(update: Update, context: ContextTypes.DEFAULT_T
         )
         return ConversationHandler.END
 
-    # Create category selection keyboard
+    # Create category selection keyboard with emojis and 2 columns
+    emoji_map = {
+        'exchange services': '💱', 'telegram': '📣', 'discord': '💬', 'instagram': '📸',
+        'x/twitter': '𝕏', 'tiktok': '🎵', 'facebook': '📘', 'youtube': '▶️', 'steam': '🎮',
+        'twitch': '🟣', 'telegram gifts': '🎁', 'other social media': '🌐',
+        'gaming accounts': '🕹️', 'gaming services': '🛠️', 'other services': '🧩',
+        'other accounts': '👥', 'meme coins': '🪙', 'usernames': '🔤', 'gaming currencies': '💰',
+        'bots and tools': '🤖', 'account upgrade': '⬆️'
+    }
     keyboard = []
-    for category in categories:
+    row = []
+    for category in sorted(categories):
         category_groups = [g for g in all_groups if g['category'] == category]
-        keyboard.append([InlineKeyboardButton(
-            f"📋 {category.title()} ({len(category_groups)} groups)", 
-            callback_data=f"select_category:{slot_id}:{category}"
-        )])
+        label = f"{emoji_map.get(category, '📋')} {category.title()} ({len(category_groups)})"
+        row.append(InlineKeyboardButton(label, callback_data=f"select_category:{slot_id}:{category}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
     
     keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data=f"manage_slot:{slot_id}")])
     keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")])
@@ -1022,16 +1490,26 @@ async def select_destination_category(update: Update, context: ContextTypes.DEFA
         )
         return ConversationHandler.END
     
-    # Set destinations for this slot
-    destinations = [group['group_name'] for group in category_groups]
+    # Set destinations for this slot: expect list of dicts
+    destinations = [
+        {
+            'destination_type': 'chat',
+            'destination_id': group.get('group_id') or group.get('group_name'),
+            'destination_name': group.get('group_name'),
+            'alias': None,
+        }
+        for group in category_groups
+    ]
     success = await db.update_destinations_for_slot(slot_id, destinations)
     
     if success:
         await query.edit_message_text(
-            f"✅ **Destinations Set Successfully!**\n\n"
+            f"✅ **Destinations Changed Successfully!**\n\n"
             f"**Category:** {category.title()}\n"
             f"**Groups:** {len(destinations)} groups\n\n"
-            f"Your ad will now be posted to all {category} groups automatically.",
+            f"🔄 **Bot restarted for your ads**\n"
+            f"Your ads will now be posted to all {category} groups automatically.\n\n"
+            f"⏱️ **Brief pause applied** to ensure clean transition.",
             parse_mode='Markdown'
         )
     else:
@@ -1068,37 +1546,49 @@ async def analytics_command_callback(update: Update, context: ContextTypes.DEFAU
         return
     
     try:
-        from analytics import AnalyticsEngine
-        analytics = AnalyticsEngine(db, context.bot_data['logger'])
-        
-        # Get user analytics
-        stats = await analytics.get_user_analytics(user_id, days=30)
-        
-        if not stats:
-            await query.edit_message_text("❌ No analytics data available yet.")
+        # Get user slots for basic analytics
+        slots = await db.get_or_create_ad_slots(user_id, subscription.get('tier', 'basic'))
+        if not slots:
+            await query.edit_message_text("❌ No ad slots found. Create some ads first!")
             return
         
+        # Create basic analytics message
+        total_slots = len(slots)
+        active_slots = sum(1 for slot in slots if slot.get('is_active'))
+        
+        # Get destinations for each slot
+        total_destinations = 0
+        for slot in slots:
+            slot_destinations = await db.get_destinations_for_slot(slot.get('id'))
+            total_destinations += len(slot_destinations) if slot_destinations else 0
+        
+        # Calculate days remaining
+        days_remaining = 0
+        if subscription.get('expires'):
+            from datetime import datetime
+            expires_value = subscription['expires']
+            if isinstance(expires_value, str):
+                try:
+                    expires_dt = datetime.fromisoformat(expires_value)
+                except Exception:
+                    try:
+                        from datetime import datetime as _dt
+                        expires_dt = _dt.strptime(expires_value, "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        expires_dt = datetime.now()
+            else:
+                expires_dt = expires_value
+            days_remaining = max(0, (expires_dt - datetime.now()).days)
+        
         # Create analytics message
-        message = f"""
-📊 *Your Analytics (Last 30 Days)*
+        message = f"""📊 **Your Analytics**
 
-📈 *Performance:*
-• Total Posts: {stats.get('total_posts', 0)}
-• Successful Posts: {stats.get('successful_posts', 0)}
-• Success Rate: {stats.get('success_rate', 0)}%
+🎯 **Ad Slots:** {total_slots} total, {active_slots} active
+📍 **Destinations:** {total_destinations} total
+⏰ **Subscription:** {subscription.get('tier', 'Unknown').title()}
+📅 **Days Remaining:** {days_remaining}
 
-🎯 *Reach:*
-• Estimated Reach: {stats.get('estimated_reach', 0):,} people
-• Active Ad Slots: {stats.get('active_slots', 0)}/{stats.get('ad_slots', 0)}
-
-💰 *ROI:*
-• Subscription Cost: ${stats.get('subscription_cost', 0)}
-• Estimated Revenue: ${stats.get('estimated_revenue', 0):.2f}
-• ROI: {stats.get('roi_percentage', 0)}%
-
-⏰ *Subscription:*
-• Days Remaining: {stats.get('days_remaining', 0)}
-"""
+*More detailed analytics coming soon!*"""
         
         # Add back button
         keyboard = [[InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="cmd:start")]]
@@ -1107,7 +1597,7 @@ async def analytics_command_callback(update: Update, context: ContextTypes.DEFAU
         await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
         
     except Exception as e:
-        context.bot_data['logger'].error(f"Analytics error: {e}")
+        logger.error(f"Analytics error: {e}")
         await query.edit_message_text("❌ Error loading analytics. Please try again later.")
 
 async def referral_command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1117,23 +1607,23 @@ async def referral_command_callback(update: Update, context: ContextTypes.DEFAUL
     user_id = update.effective_user.id
     
     try:
-        from referral_system import ReferralSystem
-        referral_system = ReferralSystem(db, context.bot_data['logger'])
+        # Simple referral code generation (hash-based)
+        import hashlib
+        referral_code = hashlib.md5(f"user_{user_id}".encode()).hexdigest()[:8].upper()
         
-        # Get or create referral code
-        referral_code = await referral_system.get_user_referral_code(user_id)
-        if not referral_code:
-            referral_code = await referral_system.create_referral_code(user_id)
-        
-        # Get referral statistics
-        stats = await referral_system.get_referral_stats(user_id)
+        # Basic referral statistics (placeholder)
+        stats = {
+            'total_referrals': 0,
+            'pending_referrals': 0,
+            'rewards_earned': 0
+        }
         
         # Create referral message
         message = f"""
 🎁 Your Referral Program
 
 🔗 Your Referral Code:
-{referral_code}
+`{referral_code}`
 
 📊 Statistics:
 • Total Referrals: {stats.get('total_referrals', 0)}
@@ -1164,36 +1654,46 @@ async def subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Show subscription plans (callback version)."""
     query = update.callback_query
     
+    # Use the same logic as the main subscribe function
+    db = context.bot_data['db']
+    user_id = update.effective_user.id
+    
+    # Get current subscription status
+    subscription = await db.get_user_subscription(user_id)
+    
+    # Create enhanced subscription plans keyboard
+    keyboard = [
+        [
+            InlineKeyboardButton("🥉 Basic - $15", callback_data="subscribe:basic"),
+            InlineKeyboardButton("🥈 Pro - $45", callback_data="subscribe:pro")
+        ],
+        [
+            InlineKeyboardButton("🥇 Enterprise - $75", callback_data="subscribe:enterprise")
+        ],
+        [
+            InlineKeyboardButton("📊 Compare Plans", callback_data="compare_plans"),
+            InlineKeyboardButton("❓ Help", callback_data="help")
+        ]
+    ]
+    
+    if subscription and subscription['is_active']:
+        status_text = f"✅ **Current Plan:** {subscription['tier'].title()}\n📅 **Expires:** {subscription['expires'].strftime('%Y-%m-%d')}"
+    else:
+        status_text = "❌ **No active subscription**"
+    
     message_text = (
-        "💎 Choose Your Subscription Plan\n\n"
-        "Basic Plan - $9.99/month\n"
-        "• 1 ad slot\n"
-        "• Basic analytics\n"
-        "• Email support\n\n"
-        "Pro Plan - $39.99/month\n"
-        "• 5 ad slots\n"
-        "• Advanced analytics\n"
-        "• Priority support\n"
-        "• Custom scheduling\n"
-        "• Ban protection\n\n"
-        "Enterprise Plan - $99.99/month\n"
-        "• 15 ad slots\n"
-        "• Full analytics suite\n"
-        "• 24/7 support\n"
-        "• Auto-renewal\n"
-        "• Premium features\n\n"
-        "Payment via TON cryptocurrency only."
+        f"🚀 **AutoFarming Pro - Subscription Plans**\n\n"
+        f"{status_text}\n\n"
+        "**Choose your plan:**\n"
+        "• **🥉 Basic** ($15): 1 ad slot, 10 destinations\n"
+        "• **🥈 Pro** ($45): 3 ad slots, 10 destinations each\n"
+        "• **🥇 Enterprise** ($75): 5 ad slots, 10 destinations each\n\n"
+        "*30-day subscription with multi-crypto payment support*\n\n"
+        "Select a plan to proceed with payment:"
     )
     
-    keyboard = [
-        [InlineKeyboardButton("💎 Basic - $9.99", callback_data="subscribe:basic")],
-        [InlineKeyboardButton("🚀 Pro - $39.99", callback_data="subscribe:pro")],
-        [InlineKeyboardButton("🏢 Enterprise - $99.99", callback_data="subscribe:enterprise")],
-        [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="cmd:start")]
-    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(message_text, reply_markup=reply_markup)
+    await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def help_command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows help information (callback version)."""
@@ -1249,24 +1749,27 @@ async def compare_plans_callback(update: Update, context: ContextTypes.DEFAULT_T
     
     comparison_text = (
         "📊 **Plan Comparison**\n\n"
-        "🥉 **Basic Plan - $9.99/month**\n"
+        "🥉 **Basic Plan - $15/month**\n"
         "• 1 ad slot\n"
+        "• 10 destinations per slot\n"
         "• Basic analytics\n"
         "• Email support\n"
         "• Standard posting\n\n"
-        "🥈 **Pro Plan - $19.99/month**\n"
+        "🥈 **Pro Plan - $45/month**\n"
         "• 3 ad slots\n"
+        "• 10 destinations per slot\n"
         "• Advanced analytics\n"
         "• Priority support\n"
         "• Custom scheduling\n"
         "• Ban protection\n\n"
-        "🥇 **Enterprise Plan - $29.99/month**\n"
+        "🥇 **Enterprise Plan - $75/month**\n"
         "• 5 ad slots\n"
+        "• 10 destinations per slot\n"
         "• Full analytics suite\n"
         "• 24/7 support\n"
         "• Auto-renewal\n"
         "• Premium features\n\n"
-        "💡 *All plans include 30-day duration and TON payment*"
+        "💡 *All plans include 30-day duration and multi-crypto payment support*"
     )
     
     keyboard = [

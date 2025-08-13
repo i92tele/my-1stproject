@@ -55,7 +55,10 @@ class AutomatedScheduler:
         
         # Create worker clients
         self.workers = []
-        for creds in worker_creds:
+        for i, creds in enumerate(worker_creds):
+            # Add delay between worker initializations to reduce database contention
+            if i > 0:
+                await asyncio.sleep(2)
             try:
                 worker = WorkerClient(
                     api_id=creds.api_id,
@@ -67,6 +70,11 @@ class AutomatedScheduler:
                 success = await worker.connect()
                 if success:
                     self.workers.append(worker)
+                    # Initialize worker limits in database
+                    try:
+                        await self.database.initialize_worker_limits(creds.worker_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to initialize limits for worker {creds.worker_id}: {e}")
                     logger.info(f"Worker {creds.worker_id} initialized successfully")
                 else:
                     logger.warning(f"Worker {creds.worker_id} failed to connect")
@@ -109,14 +117,9 @@ class AutomatedScheduler:
                 logger.info("No active ad slots found")
                 return
                 
-            # Get destinations
-            destinations = await self._get_destinations()
-            if not destinations:
-                logger.info("No destinations found")
-                return
-                
             # Post ads
-            results = await self.posting_service.post_ads(ad_slots, destinations)
+            # posting_service now fetches per-slot destinations
+            results = await self.posting_service.post_ads(ad_slots)
             
             # Log results
             logger.info(f"Posting cycle completed: {results}")
@@ -126,49 +129,16 @@ class AutomatedScheduler:
             logger.error(f"Posting cycle error: {e}")
             
     async def _get_active_ad_slots(self) -> List[Dict]:
-        """Get active ad slots from database."""
+        """Get active ad slots from database that are due for posting."""
         try:
-            ad_slots = await self.database.get_active_ad_slots()
-            logger.info(f"Found {len(ad_slots)} active ad slots")
+            ad_slots = await self.database.get_active_ads_to_send()
+            logger.info(f"Found {len(ad_slots)} active ad slots due for posting")
             return ad_slots or []
         except Exception as e:
             logger.error(f"Error getting ad slots: {e}")
             return []
             
-    async def _get_destinations(self) -> List[Dict]:
-        """Get destinations from ad slots (since they're linked)."""
-        try:
-            # Get destinations from the ad slots we already have
-            destinations = []
-            ad_slots = await self.database.get_active_ad_slots()
-            
-            for slot in ad_slots:
-                if slot.get('destinations'):
-                    for i, dest_id in enumerate(slot['destinations']):
-                        dest_name = slot['destination_names'][i] if i < len(slot['destination_names']) else dest_id
-                        destinations.append({
-                            'id': dest_id,
-                            'name': dest_name,
-                            'type': 'channel',
-                            'category': 'crypto',  # Default category
-                            'slot_id': slot['id']
-                        })
-            
-            # Remove duplicates
-            unique_destinations = []
-            seen = set()
-            for dest in destinations:
-                key = dest['id']
-                if key not in seen:
-                    seen.add(key)
-                    unique_destinations.append(dest)
-            
-            logger.info(f"Found {len(unique_destinations)} unique destinations")
-            return unique_destinations
-            
-        except Exception as e:
-            logger.error(f"Error getting destinations: {e}")
-            return []
+
             
     def get_status(self) -> Dict[str, Any]:
         """Get scheduler status."""

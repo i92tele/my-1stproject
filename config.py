@@ -21,7 +21,8 @@ class BotConfig:
         self.bot_name = "AutoFarming Bot"
         
         # Database
-        self.database_url = os.getenv("DATABASE_URL")
+        # Fallback to local SQLite file if DATABASE_URL is not provided
+        self.database_url = os.getenv("DATABASE_URL") or "bot_database.db"
         
         # Cryptocurrency wallets
         self.btc_address = os.getenv("BTC_ADDRESS")
@@ -98,8 +99,7 @@ class BotConfig:
             missing_configs.append("BOT_TOKEN")
         if not self.admin_id:
             missing_configs.append("ADMIN_ID")
-        if not self.database_url:
-            missing_configs.append("DATABASE_URL")
+        # database_url has a safe default (bot_database.db), so it is not strictly required
         
         if missing_configs:
             error_msg = f"Missing required configuration: {', '.join(missing_configs)}"
