@@ -1,6 +1,7 @@
 import logging
-from .worker_manager import WorkerManager
-from .database import DatabaseManager
+from typing import Dict, Any
+from src.services.worker_manager import WorkerManager
+from src.database.manager import DatabaseManager
 
 class WorkerIntegration:
     """Integration layer for WorkerManager with existing bot systems."""
@@ -110,4 +111,4 @@ def initialize_worker_integration(logger: logging.Logger, db_manager: DatabaseMa
 
 def get_worker_integration():
     """Get the global worker integration instance."""
-    return worker_integration 
+    return worker_integration

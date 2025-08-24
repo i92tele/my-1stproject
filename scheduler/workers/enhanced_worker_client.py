@@ -7,6 +7,7 @@ Individual worker account management with advanced group joining capabilities
 import asyncio
 import logging
 import os
+import time
 from typing import Optional, Dict, Any, List
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError
@@ -95,12 +96,12 @@ class EnhancedWorkerClient:
                         message, 
                         reply_to=topic_id
                     )
-                    self.last_activity = asyncio.get_event_loop().time()
+                    self.last_activity = time.time()
                     return True
             
             # Regular chat/channel posting
             await self.client.send_message(chat_id, message)
-            self.last_activity = asyncio.get_event_loop().time()
+            self.last_activity = time.time()
             return True
         except Exception as e:
             logger.error(f"Worker {self.worker_id}: Failed to send message: {e}")

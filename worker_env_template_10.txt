@@ -1,0 +1,63 @@
+# Worker Environment Variables Template
+# Copy this to your .env file and fill in your actual credentials
+
+# Worker 1
+WORKER_1_API_ID=your_api_id_here
+WORKER_1_API_HASH=your_api_hash_here
+WORKER_1_PHONE=+1234567890
+
+# Worker 2
+WORKER_2_API_ID=your_api_id_here
+WORKER_2_API_HASH=your_api_hash_here
+WORKER_2_PHONE=+1234567890
+
+# Worker 3
+WORKER_3_API_ID=your_api_id_here
+WORKER_3_API_HASH=your_api_hash_here
+WORKER_3_PHONE=+1234567890
+
+# Worker 4
+WORKER_4_API_ID=your_api_id_here
+WORKER_4_API_HASH=your_api_hash_here
+WORKER_4_PHONE=+1234567890
+
+# Worker 5
+WORKER_5_API_ID=your_api_id_here
+WORKER_5_API_HASH=your_api_hash_here
+WORKER_5_PHONE=+1234567890
+
+# Worker 6
+WORKER_6_API_ID=your_api_id_here
+WORKER_6_API_HASH=your_api_hash_here
+WORKER_6_PHONE=+1234567890
+
+# Worker 7
+WORKER_7_API_ID=your_api_id_here
+WORKER_7_API_HASH=your_api_hash_here
+WORKER_7_PHONE=+1234567890
+
+# Worker 8
+WORKER_8_API_ID=your_api_id_here
+WORKER_8_API_HASH=your_api_hash_here
+WORKER_8_PHONE=+1234567890
+
+# Worker 9
+WORKER_9_API_ID=your_api_id_here
+WORKER_9_API_HASH=your_api_hash_here
+WORKER_9_PHONE=+1234567890
+
+# Worker 10
+WORKER_10_API_ID=your_api_id_here
+WORKER_10_API_HASH=your_api_hash_here
+WORKER_10_PHONE=+1234567890
+
+# Future Workers (Template - uncomment and fill when needed)
+# WORKER_11_API_ID=your_api_id_here
+# WORKER_11_API_HASH=your_api_hash_here
+# WORKER_11_PHONE=+1234567890
+
+# WORKER_12_API_ID=your_api_id_here
+# WORKER_12_API_HASH=your_api_hash_here
+# WORKER_12_PHONE=+1234567890
+
+# Add more as needed...

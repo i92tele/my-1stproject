@@ -80,6 +80,64 @@ async def run_database_migration(db_path: str):
         ''')
         print("✅ Created notification_log table")
         
+        # Create posting_history table for comprehensive posting tracking
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS posting_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slot_id INTEGER,
+                slot_type TEXT DEFAULT 'user',
+                destination_id TEXT,
+                destination_name TEXT,
+                worker_id INTEGER,
+                success BOOLEAN,
+                error_message TEXT,
+                posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                message_content_hash TEXT,
+                retry_count INTEGER DEFAULT 0,
+                ban_detected BOOLEAN DEFAULT 0,
+                ban_type TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (slot_id) REFERENCES ad_slots(id)
+            )
+        ''')
+        print("✅ Created posting_history table")
+        
+        # Create worker_bans table for tracking worker bans per destination
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS worker_bans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                worker_id INTEGER,
+                destination_id TEXT,
+                ban_type TEXT,
+                ban_reason TEXT,
+                banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                estimated_unban_time TIMESTAMP,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        print("✅ Created worker_bans table")
+        
+        # Create destination_health table for tracking destination success rates
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS destination_health (
+                destination_id TEXT PRIMARY KEY,
+                destination_name TEXT,
+                total_attempts INTEGER DEFAULT 0,
+                successful_posts INTEGER DEFAULT 0,
+                failed_posts INTEGER DEFAULT 0,
+                success_rate REAL DEFAULT 100.0,
+                last_success TIMESTAMP,
+                last_failure TIMESTAMP,
+                ban_count INTEGER DEFAULT 0,
+                last_ban_time TIMESTAMP,
+                cooldown_until TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        print("✅ Created destination_health table")
+        
         # Insert initial admin slots if they don't exist
         cursor.execute('SELECT COUNT(*) FROM admin_ad_slots')
         existing_slots = cursor.fetchone()[0]

@@ -19,19 +19,26 @@ class WorkerAssignmentService:
                 logger.warning("No available workers found")
                 return None
             
-            # Sort by safety score (higher is better) and usage percentage (lower is better)
+            # Enhanced sorting algorithm for better worker selection
             sorted_workers = sorted(
                 available_workers,
                 key=lambda w: (
-                    w.get('safety_score', 100.0),  # Higher safety score first
-                    -w.get('hourly_usage_percent', 0),  # Lower usage first
-                    -w.get('daily_usage_percent', 0)  # Lower daily usage first
-                ),
-                reverse=True
+                    # Primary: Avoid workers near their limits (safety first)
+                    -(w.get('hourly_posts', 0) / max(w.get('hourly_limit', 15), 1)),  # Lower usage percentage first
+                    -(w.get('daily_posts', 0) / max(w.get('daily_limit', 150), 1)),   # Lower daily usage first
+                    # Secondary: Prefer workers with good health
+                    w.get('success_rate', 100.0),     # Higher success rate first
+                    -w.get('ban_count', 0),           # Lower ban count first
+                    -w.get('error_count', 0),         # Lower error count first
+                    # Tertiary: Load balancing
+                    w.get('hourly_posts', 0),         # Prefer less used workers
+                )
             )
             
             best_worker = sorted_workers[0]
-            logger.info(f"Selected worker {best_worker['worker_id']} with safety score {best_worker.get('safety_score', 100.0)}")
+            usage_percent = (best_worker.get('hourly_posts', 0) / max(best_worker.get('hourly_limit', 15), 1)) * 100
+            
+            logger.info(f"Selected worker {best_worker['worker_id']} - Usage: {usage_percent:.1f}%, Success: {best_worker.get('success_rate', 100.0):.1f}%")
             
             return best_worker
             

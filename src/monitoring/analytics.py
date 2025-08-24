@@ -3,7 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 
 class AnalyticsEngine:
     """Analytics and performance tracking for users."""

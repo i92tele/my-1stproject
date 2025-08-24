@@ -2,7 +2,7 @@
 import re
 import logging
 from typing import Dict, List, Tuple
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 
 class ContentModerator:
     """Content moderation and spam prevention."""

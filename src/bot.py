@@ -7,14 +7,14 @@ from telegram.ext import (
     ContextTypes, CallbackQueryHandler, ConversationHandler
 )
 
-from .config import BotConfig
-from .database import DatabaseManager
-from .blockchain_payments import BlockchainPaymentProcessor
-from .notifications import NotificationManager
-from .error_logger import TelegramErrorLogger
-from .forwarding import MessageForwarder
-from .filters import MessageFilter
-from .commands import user, admin, forwarding as fwd_cmds
+from src.config.bot_config import BotConfig
+from src.database.manager import DatabaseManager
+from src.services.blockchain_payments import BlockchainPaymentProcessor
+from src.notifications import NotificationManager
+from src.error_logger import TelegramErrorLogger
+from src.forwarding import MessageForwarder
+from src.filters import MessageFilter
+from src.commands import user, admin, forwarding as fwd_cmds
 
 # --- Global logger setup ---
 LOGGER = logging.getLogger(__name__)

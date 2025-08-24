@@ -1,0 +1,36 @@
+# =============================================================================
+# MULTI-CRYPTO PAYMENT CONFIGURATION
+# =============================================================================
+# Add these variables to your config/.env file for multi-crypto payments
+# =============================================================================
+
+# TON (Toncoin) - Uses memo-based verification
+TON_ADDRESS=EQD...your_ton_wallet_address_here...
+
+# Bitcoin - Uses amount + time window verification
+BTC_ADDRESS=bc1...your_bitcoin_wallet_address_here...
+
+# Ethereum - Uses amount + time window verification
+ETH_ADDRESS=0x...your_ethereum_wallet_address_here...
+
+# Solana - Uses memo-based verification
+SOL_ADDRESS=...your_solana_wallet_address_here...
+
+# Litecoin - Uses amount + time window verification
+LTC_ADDRESS=L...your_litecoin_wallet_address_here...
+
+# Optional API Keys (for enhanced verification)
+TON_API_KEY=your_ton_api_key_here
+TONCENTER_API_KEY=your_toncenter_api_key_here
+ETHERSCAN_API_KEY=your_etherscan_api_key_here
+BLOCKCYPHER_API_KEY=your_blockcypher_api_key_here
+
+# Payment tolerance (default 3% = 0.03)
+PAYMENT_TOLERANCE=0.03
+
+# =============================================================================
+# VERIFICATION METHODS:
+# =============================================================================
+# TON & SOL: Amount + Memo (payment_id in transaction comment)
+# BTC, ETH, LTC, USDT, USDC: Amount + Time Window (30 min after payment creation)
+# =============================================================================

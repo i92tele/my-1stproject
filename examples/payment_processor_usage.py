@@ -13,7 +13,7 @@ import sys
 sys.path.append('src')
 
 from payment_processor import PaymentProcessor, initialize_payment_processor
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 
 # Configure logging
 logging.basicConfig(

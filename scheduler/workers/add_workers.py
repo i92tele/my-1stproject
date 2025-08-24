@@ -24,7 +24,7 @@ class WorkerManager:
         """Load worker configurations from environment variables."""
         logger.info("🔍 Loading worker configurations...")
         
-        for i in range(1, 6):  # Support up to 5 workers
+        for i in range(1, 11):  # Support up to 10 workers
             api_id = os.getenv(f"WORKER_{i}_API_ID")
             api_hash = os.getenv(f"WORKER_{i}_API_HASH")
             phone = os.getenv(f"WORKER_{i}_PHONE")

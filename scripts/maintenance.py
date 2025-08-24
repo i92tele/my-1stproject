@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import BotConfig
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 from crypto_payments import CryptoPaymentProcessor
 
 # Setup logging

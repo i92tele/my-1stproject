@@ -9,12 +9,16 @@ import logging
 import sys
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config import BotConfig
-from database import DatabaseManager
+# Load environment variables
+load_dotenv('config/.env')
+
+from src.config.bot_config import BotConfig
+from src.database.manager import DatabaseManager
 from scheduler.core.scheduler import AutomatedScheduler
 from scheduler.config.scheduler_config import SchedulerConfig
 from scheduler.config.worker_config import WorkerConfig
@@ -42,7 +46,7 @@ async def main():
         worker_config = WorkerConfig()
         
         # Initialize database
-        db = DatabaseManager(config.database_url, logger)
+        db = DatabaseManager(config.db_path, logger)
         await db.initialize()
         
         # Load worker credentials

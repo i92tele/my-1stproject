@@ -1,3 +1,5 @@
+from src.payment_address_direct_fix import fix_payment_data, get_payment_message
+from src.payment_address_fix import fix_payment_data, get_crypto_address
 #!/usr/bin/env python3
 """Create a test payment to match existing TON transaction."""
 
@@ -10,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv('config/.env')
 
 from config import BotConfig
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 from ton_payments import TONPaymentProcessor
 import logging
 

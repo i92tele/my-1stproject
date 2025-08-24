@@ -6,7 +6,14 @@ ADMIN_ID=your_admin_user_id_here
 DATABASE_URL=postgresql://username:password@localhost/database_name
 
 # Cryptocurrency Wallets
+
+# Exodus HD Wallet (for BTC, ETH, SOL, LTC)
+EXODUS_MASTER_SEED=your twelve word seed phrase from exodus wallet here
+
+# Tonkeeper Wallet (for TON only)
 TON_ADDRESS=EQD...your_ton_wallet_address_here
+
+# Fallback addresses (optional - used if HD wallet fails)
 BTC_ADDRESS=your_bitcoin_address_here
 ETH_ADDRESS=your_ethereum_address_here
 SOL_ADDRESS=your_solana_address_here

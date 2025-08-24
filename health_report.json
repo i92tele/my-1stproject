@@ -1,10 +1,12 @@
 {
-  "timestamp": "2025-08-13T21:22:50.551411",
+  "timestamp": "2025-08-20T18:42:54.076346",
   "overall_status": "WARNING",
   "checks": {
     "environment_variables": {
-      "status": "PASS",
-      "missing_required": [],
+      "status": "FAIL",
+      "missing_required": [
+        "ADMIN_ID"
+      ],
       "missing_optional": [
         "USDT_ADDRESS",
         "USDC_ADDRESS",
@@ -12,17 +14,20 @@
         "TRX_ADDRESS"
       ],
       "env_file_exists": true,
-      "issues": [],
-      "fixes": []
+      "issues": [
+        "Missing required environment variable: ADMIN_ID"
+      ],
+      "fixes": [
+        "Create or update config/.env file with required variables",
+        "Set BOT_TOKEN from @BotFather",
+        "Set ADMIN_ID to your Telegram user ID",
+        "Set DATABASE_URL for your database connection"
+      ]
     },
     "dependencies": {
       "status": "PASS",
       "missing_required": [],
-      "missing_optional": [
-        "redis",
-        "cryptography",
-        "requests"
-      ],
+      "missing_optional": [],
       "issues": [],
       "fixes": []
     },
@@ -33,15 +38,9 @@
       "fixes": []
     },
     "database": {
-      "status": "FAIL",
-      "issues": [
-        "Database table access failed: object NoneType can't be used in 'await' expression"
-      ],
-      "fixes": [
-        "Run database migrations: python3 run_migration.py",
-        "Check database schema and table structure",
-        "Verify database permissions"
-      ]
+      "status": "PASS",
+      "issues": [],
+      "fixes": []
     },
     "bot_configuration": {
       "status": "PASS",
@@ -54,15 +53,9 @@
       "fixes": []
     },
     "critical_user_flows": {
-      "status": "FAIL",
-      "issues": [
-        "User flow check failed: object NoneType can't be used in 'await' expression"
-      ],
-      "fixes": [
-        "Check database connection",
-        "Verify database schema",
-        "Test individual flow components"
-      ]
+      "status": "PASS",
+      "issues": [],
+      "fixes": []
     },
     "file_structure": {
       "status": "PASS",
@@ -81,9 +74,8 @@
   "issues": [],
   "fixes": [],
   "warnings": [
-    "Missing optional variables: USDT_ADDRESS, USDC_ADDRESS, ADA_ADDRESS, TRX_ADDRESS",
-    "Missing optional packages: redis, cryptography, requests"
+    "Missing optional variables: USDT_ADDRESS, USDC_ADDRESS, ADA_ADDRESS, TRX_ADDRESS"
   ],
-  "success_count": 7,
+  "success_count": 8,
   "total_checks": 9
 }

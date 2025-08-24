@@ -66,7 +66,7 @@ class FinalFixes:
         
         try:
             # Test database connection
-            from database import DatabaseManager
+            from src.database.manager import DatabaseManager
             from config import BotConfig
             
             config = BotConfig.load_from_env()
@@ -144,7 +144,7 @@ class FinalFixes:
             # Import worker fix
             from fix_worker_system import WorkerSystemFix
             from config import BotConfig
-            from database import DatabaseManager
+            from src.database.manager import DatabaseManager
             
             config = BotConfig.load_from_env()
             db = DatabaseManager(config, logger)
@@ -167,7 +167,7 @@ class FinalFixes:
             # Import payment fix
             from fix_payment_system import PaymentSystemFix
             from config import BotConfig
-            from database import DatabaseManager
+            from src.database.manager import DatabaseManager
             
             config = BotConfig.load_from_env()
             db = DatabaseManager(config, logger)

@@ -18,7 +18,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from config import BotConfig
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 from multi_crypto_payments import MultiCryptoPaymentProcessor
 
 # Logging

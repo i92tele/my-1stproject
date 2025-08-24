@@ -7,6 +7,7 @@ Individual worker account management and Telegram client handling
 import asyncio
 import logging
 import os
+import time
 from typing import Optional, Dict, Any, List
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError
@@ -61,11 +62,21 @@ class WorkerClient:
             await self.client.disconnect()
             self.is_connected = False
             
-    async def send_message(self, chat_id: str, message: str) -> bool:
-        """Send message to chat."""
+    async def send_message(self, chat_id: str, message: str, database_manager=None) -> bool:
+        """Send message to chat with ban detection."""
         if not self.is_connected:
             logger.error(f"Worker {self.worker_id}: Not connected")
             return False
+        
+        # Check if worker is banned from this destination
+        if database_manager:
+            try:
+                is_banned = await database_manager.is_worker_banned(self.worker_id, chat_id)
+                if is_banned:
+                    logger.warning(f"Worker {self.worker_id}: Banned from {chat_id}, skipping")
+                    return False
+            except Exception as e:
+                logger.error(f"Worker {self.worker_id}: Error checking ban status: {e}")
             
         try:
             # Handle forum topics (format: group/topic_id or t.me/group/topic_id)
@@ -86,24 +97,118 @@ class WorkerClient:
                     
                     logger.info(f"Worker {self.worker_id}: Sending to forum topic {group_username}, topic {topic_id}")
                     
-                    # Get the group entity
-                    group_entity = await self.client.get_entity(group_username)
-                    
-                    # Send message to the specific topic
-                    await self.client.send_message(
-                        group_entity, 
-                        message, 
-                        reply_to=topic_id
-                    )
-                    self.last_activity = asyncio.get_event_loop().time()
-                    return True
+                    try:
+                        # First, ensure we're a member of the main group
+                        group_entity = await self.client.get_entity(group_username)
+                        
+                        # Try to join the group if not already a member
+                        try:
+                            await self.client(JoinChannelRequest(group_entity))
+                            logger.info(f"Worker {self.worker_id}: Successfully joined {group_username}")
+                        except Exception as join_error:
+                            if "already a participant" not in str(join_error).lower():
+                                logger.warning(f"Worker {self.worker_id}: Failed to join {group_username}: {join_error}")
+                        
+                        # Send message to the specific topic
+                        await self.client.send_message(
+                            group_entity, 
+                            message, 
+                            reply_to=topic_id
+                        )
+                        self.last_activity = time.time()
+                        return True
+                        
+                    except Exception as forum_error:
+                        logger.warning(f"Worker {self.worker_id}: Forum topic posting failed: {forum_error}")
+                        # Fall back to regular posting
+                        pass
             
             # Regular chat/channel posting
             await self.client.send_message(chat_id, message)
-            self.last_activity = asyncio.get_event_loop().time()
+            self.last_activity = time.time()
             return True
+            
         except Exception as e:
-            logger.error(f"Worker {self.worker_id}: Failed to send message: {e}")
+            error_text = str(e)
+            logger.error(f"Worker {self.worker_id}: Failed to send message: {error_text}")
+            
+            # Detect and record ban if database manager is available
+            if database_manager:
+                await self._handle_ban_detection(database_manager, chat_id, error_text)
+            
+            return False
+
+    async def _handle_ban_detection(self, database_manager, chat_id: str, error_text: str):
+        """Handle ban detection and recording."""
+        try:
+            error_lower = error_text.lower()
+            ban_type = None
+            ban_reason = error_text
+            
+            # Detect ban type based on error message
+            if any(key in error_lower for key in ["can't write in this chat", "forbidden", "writeforbidden", "banned"]):
+                ban_type = "permission_denied"
+            elif "topic_closed" in error_lower:
+                ban_type = "topic_closed"
+            elif "rate limit" in error_lower or "wait" in error_lower:
+                ban_type = "rate_limit"
+            elif "content" in error_lower and ("violation" in error_lower or "not allowed" in error_lower):
+                ban_type = "content_violation"
+            
+            # Record ban if detected
+            if ban_type:
+                # Estimate unban time based on ban type
+                estimated_unban_time = None
+                if ban_type == "rate_limit":
+                    from datetime import datetime, timedelta
+                    estimated_unban_time = (datetime.now() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
+                elif ban_type == "topic_closed":
+                    from datetime import datetime, timedelta
+                    estimated_unban_time = (datetime.now() + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
+                
+                await database_manager.record_worker_ban(
+                    worker_id=self.worker_id,
+                    destination_id=chat_id,
+                    ban_type=ban_type,
+                    ban_reason=ban_reason,
+                    estimated_unban_time=estimated_unban_time
+                )
+                
+                logger.warning(f"Worker {self.worker_id}: Ban detected and recorded - type: {ban_type}, dest: {chat_id}")
+                
+        except Exception as e:
+            logger.error(f"Worker {self.worker_id}: Error handling ban detection: {e}")
+
+    async def check_ban_status(self, database_manager, destination_id: str) -> bool:
+        """Check if worker is banned from a specific destination."""
+        try:
+            return await database_manager.is_worker_banned(self.worker_id, destination_id)
+        except Exception as e:
+            logger.error(f"Worker {self.worker_id}: Error checking ban status: {e}")
+            return False
+
+    async def get_ban_summary(self, database_manager) -> Dict[str, Any]:
+        """Get ban summary for this worker."""
+        try:
+            bans = await database_manager.get_worker_bans(worker_id=self.worker_id, active_only=True)
+            return {
+                'total_bans': len(bans),
+                'bans': bans,
+                'worker_id': self.worker_id
+            }
+        except Exception as e:
+            logger.error(f"Worker {self.worker_id}: Error getting ban summary: {e}")
+            return {'total_bans': 0, 'bans': [], 'worker_id': self.worker_id}
+
+    async def clear_ban(self, database_manager, destination_id: str) -> bool:
+        """Clear a ban for this worker from a specific destination."""
+        try:
+            success = await database_manager.clear_worker_ban(self.worker_id, destination_id)
+            if success:
+                logger.info(f"Worker {self.worker_id}: Ban cleared for {destination_id}")
+            return success
+        except Exception as e:
+            logger.error(f"Worker {self.worker_id}: Error clearing ban: {e}")
             return False
             
     async def join_channel(self, channel_username: str) -> bool:

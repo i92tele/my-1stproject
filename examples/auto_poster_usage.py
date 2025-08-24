@@ -14,7 +14,7 @@ sys.path.append('src')
 
 from auto_poster import AutoPoster, initialize_auto_poster
 from worker_manager import WorkerManager
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 
 # Configure logging
 logging.basicConfig(

@@ -30,11 +30,11 @@ class WorkerConfig:
         
     def load_workers_from_env(self) -> List[WorkerCredentials]:
         """Load worker credentials from environment variables."""
-        workers = []
+        self.workers = []
         
         # Check for worker credentials in environment
         worker_count = 0
-        for i in range(1, 11):  # Support up to 10 workers
+        for i in range(1, 51):  # Support up to 50 workers (expandable to 500)
             api_id = os.getenv(f'WORKER_{i}_API_ID')
             api_hash = os.getenv(f'WORKER_{i}_API_HASH')
             phone = os.getenv(f'WORKER_{i}_PHONE')
@@ -47,12 +47,12 @@ class WorkerConfig:
                     phone=phone,
                     session_file=f"{self.sessions_dir}/worker_{i}.session"
                 )
-                workers.append(worker)
+                self.workers.append(worker)
                 worker_count += 1
                 logger.info(f"Loaded worker {i} credentials")
                 
         logger.info(f"Loaded {worker_count} worker accounts")
-        return workers
+        return self.workers
         
     def get_active_workers(self) -> List[WorkerCredentials]:
         """Get list of active workers."""

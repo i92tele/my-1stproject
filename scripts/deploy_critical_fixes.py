@@ -14,7 +14,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import BotConfig
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 from multi_crypto_payments import MultiCryptoPaymentProcessor
 from security import SecurityManager
 

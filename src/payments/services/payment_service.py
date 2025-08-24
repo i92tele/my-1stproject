@@ -1,3 +1,5 @@
+from src.payment_address_direct_fix import fix_payment_data, get_payment_message
+from src.payment_address_fix import fix_payment_data, get_crypto_address
 """
 Main Payment Service
 

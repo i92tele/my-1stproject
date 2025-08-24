@@ -18,6 +18,7 @@ class BannedWorkerChecker:
     def __init__(self):
         self.workers = []
         self.load_workers_from_env()
+        self.target_group = "@roexchangeschat"  # Target group to test
     
     def load_workers_from_env(self):
         """Load worker configurations from environment."""
@@ -97,8 +98,8 @@ class BannedWorkerChecker:
             logger.error(f"❌ Failed to connect worker {worker_config['index']}: {e}")
             return {'status': 'failed', 'worker': worker_config['index'], 'error': str(e)}
     
-    async def test_worker_in_groups(self, worker_config, test_groups):
-        """Test if worker can access specific groups."""
+    async def test_worker_in_target_group(self, worker_config):
+        """Test if worker can send messages to @roexchangeschat."""
         try:
             session_name = f"sessions/worker_{worker_config['index']}"
             client = TelegramClient(session_name, int(worker_config['api_id']), worker_config['api_hash'])
@@ -109,49 +110,92 @@ class BannedWorkerChecker:
                 await client.disconnect()
                 return {'status': 'not_authorized', 'worker': worker_config['index']}
             
-            group_results = {}
+            # Get user info
+            me = await client.get_me()
             
-            for group in test_groups:
-                try:
-                    # Try to get group info
-                    entity = await client.get_entity(group)
-                    logger.info(f"✅ Worker {worker_config['index']} can access {group}")
-                    group_results[group] = 'accessible'
-                except Exception as e:
-                    logger.warning(f"⚠️ Worker {worker_config['index']} cannot access {group}: {e}")
-                    group_results[group] = 'banned_or_restricted'
+            # Test message to send
+            test_message = f"🤖 Worker {worker_config['index']} (@{me.username}) - Testing access to {self.target_group}"
             
-            await client.disconnect()
-            
-            return {
-                'status': 'tested',
-                'worker': worker_config['index'],
-                'group_results': group_results
-            }
+            try:
+                # Try to send message to target group
+                await client.send_message(self.target_group, test_message)
+                logger.info(f"✅ Worker {worker_config['index']} (@{me.username}) CAN send messages to {self.target_group}")
+                
+                await client.disconnect()
+                return {
+                    'status': 'can_post',
+                    'worker': worker_config['index'],
+                    'username': me.username,
+                    'phone': worker_config['phone'],
+                    'target_group': self.target_group
+                }
+                
+            except UserBannedInChannelError:
+                logger.error(f"❌ Worker {worker_config['index']} (@{me.username}) is BANNED from {self.target_group}")
+                await client.disconnect()
+                return {
+                    'status': 'banned_from_group',
+                    'worker': worker_config['index'],
+                    'username': me.username,
+                    'phone': worker_config['phone'],
+                    'target_group': self.target_group,
+                    'error': 'UserBannedInChannelError'
+                }
+                
+            except ChatWriteForbiddenError:
+                logger.warning(f"⚠️ Worker {worker_config['index']} (@{me.username}) cannot write to {self.target_group} - group restrictions")
+                await client.disconnect()
+                return {
+                    'status': 'write_forbidden',
+                    'worker': worker_config['index'],
+                    'username': me.username,
+                    'phone': worker_config['phone'],
+                    'target_group': self.target_group,
+                    'error': 'ChatWriteForbiddenError'
+                }
+                
+            except FloodWaitError as e:
+                logger.warning(f"⚠️ Worker {worker_config['index']} (@{me.username}) hit rate limit for {self.target_group}: {e}")
+                await client.disconnect()
+                return {
+                    'status': 'rate_limited',
+                    'worker': worker_config['index'],
+                    'username': me.username,
+                    'phone': worker_config['phone'],
+                    'target_group': self.target_group,
+                    'error': f'FloodWaitError: {e}'
+                }
+                
+            except Exception as e:
+                logger.error(f"❌ Worker {worker_config['index']} (@{me.username}) error with {self.target_group}: {e}")
+                await client.disconnect()
+                return {
+                    'status': 'error',
+                    'worker': worker_config['index'],
+                    'username': me.username,
+                    'phone': worker_config['phone'],
+                    'target_group': self.target_group,
+                    'error': str(e)
+                }
             
         except Exception as e:
-            logger.error(f"❌ Failed to test worker {worker_config['index']} in groups: {e}")
+            logger.error(f"❌ Failed to test worker {worker_config['index']} in {self.target_group}: {e}")
             return {'status': 'failed', 'worker': worker_config['index'], 'error': str(e)}
     
     async def check_all_workers(self):
         """Check all workers for bans and restrictions."""
-        logger.info("🔍 Checking all workers for bans and restrictions...")
+        logger.info(f"🔍 Checking all workers for access to {self.target_group}...")
         
         results = []
-        test_groups = ["@test_crypto_group", "@binance_signals", "@cryptosignals"]
         
         for worker in self.workers:
             logger.info(f"Testing worker {worker['index']} ({worker['phone']})...")
             
-            # Basic connection test
-            result = await self.test_worker_connection(worker)
+            # Test access to target group
+            result = await self.test_worker_in_target_group(worker)
             results.append(result)
             
-            # Group access test
-            group_result = await self.test_worker_in_groups(worker, test_groups)
-            results.append(group_result)
-            
-            await asyncio.sleep(2)  # Delay between workers
+            await asyncio.sleep(3)  # Delay between workers to avoid rate limits
         
         return results
     
@@ -159,56 +203,51 @@ class BannedWorkerChecker:
         """Analyze the results and identify banned/restricted workers."""
         logger.info("📊 Analyzing worker results...")
         
-        active_workers = []
+        can_post_workers = []
         banned_workers = []
         restricted_workers = []
+        rate_limited_workers = []
         failed_workers = []
         
         for result in results:
-            if result['status'] == 'active':
-                if result.get('can_send_messages', True) and result.get('can_join_groups', True):
-                    active_workers.append(result)
-                else:
-                    restricted_workers.append(result)
-            elif result['status'] == 'failed':
-                failed_workers.append(result)
-            elif result['status'] == 'not_authorized':
+            if result['status'] == 'can_post':
+                can_post_workers.append(result)
+            elif result['status'] == 'banned_from_group':
+                banned_workers.append(result)
+            elif result['status'] == 'write_forbidden':
+                restricted_workers.append(result)
+            elif result['status'] == 'rate_limited':
+                rate_limited_workers.append(result)
+            elif result['status'] in ['failed', 'not_authorized', 'error']:
                 failed_workers.append(result)
         
-        # Check group access results
-        for result in results:
-            if result['status'] == 'tested':
-                banned_groups = [group for group, status in result.get('group_results', {}).items() 
-                               if status == 'banned_or_restricted']
-                if banned_groups:
-                    logger.warning(f"⚠️ Worker {result['worker']} banned from groups: {banned_groups}")
-                    banned_workers.append(result)
-        
-        logger.info(f"📈 Worker Analysis:")
-        logger.info(f"   ✅ Active workers: {len(active_workers)}")
-        logger.info(f"   ⚠️ Restricted workers: {len(restricted_workers)}")
-        logger.info(f"   ❌ Banned workers: {len(banned_workers)}")
-        logger.info(f"   🔧 Failed workers: {len(failed_workers)}")
+        logger.info(f"📈 Worker Analysis for {self.target_group}:")
+        logger.info(f"   ✅ Can post: {len(can_post_workers)}")
+        logger.info(f"   ❌ Banned: {len(banned_workers)}")
+        logger.info(f"   ⚠️ Restricted: {len(restricted_workers)}")
+        logger.info(f"   🕐 Rate limited: {len(rate_limited_workers)}")
+        logger.info(f"   🔧 Failed: {len(failed_workers)}")
         
         if banned_workers:
-            logger.warning("🚨 BANNED WORKERS DETECTED:")
+            logger.warning("🚨 BANNED WORKERS FROM TARGET GROUP:")
             for worker in banned_workers:
-                logger.warning(f"   Worker {worker['worker']}: {worker.get('error', 'Banned from groups')}")
+                logger.warning(f"   Worker {worker['worker']} (@{worker['username']}): {worker['phone']}")
         
         if restricted_workers:
             logger.warning("⚠️ RESTRICTED WORKERS:")
             for worker in restricted_workers:
-                restrictions = []
-                if not worker.get('can_send_messages', True):
-                    restrictions.append("Cannot send messages")
-                if not worker.get('can_join_groups', True):
-                    restrictions.append("Cannot join groups")
-                logger.warning(f"   Worker {worker['worker']}: {', '.join(restrictions)}")
+                logger.warning(f"   Worker {worker['worker']} (@{worker['username']}): {worker['phone']} - {worker['error']}")
+        
+        if rate_limited_workers:
+            logger.warning("🕐 RATE LIMITED WORKERS:")
+            for worker in rate_limited_workers:
+                logger.warning(f"   Worker {worker['worker']} (@{worker['username']}): {worker['phone']} - {worker['error']}")
         
         return {
-            'active': active_workers,
+            'can_post': can_post_workers,
             'banned': banned_workers,
             'restricted': restricted_workers,
+            'rate_limited': rate_limited_workers,
             'failed': failed_workers
         }
 
@@ -227,17 +266,21 @@ async def main():
     analysis = checker.analyze_results(results)
     
     # Summary
-    logger.info("📋 BANNED WORKER CHECK SUMMARY:")
+    logger.info("📋 TARGET GROUP ACCESS SUMMARY:")
+    logger.info(f"   Target group: {checker.target_group}")
     logger.info(f"   Total workers: {len(checker.workers)}")
-    logger.info(f"   Active: {len(analysis['active'])}")
+    logger.info(f"   Can post: {len(analysis['can_post'])}")
     logger.info(f"   Banned: {len(analysis['banned'])}")
     logger.info(f"   Restricted: {len(analysis['restricted'])}")
+    logger.info(f"   Rate limited: {len(analysis['rate_limited'])}")
     logger.info(f"   Failed: {len(analysis['failed'])}")
     
-    if analysis['banned'] or analysis['restricted']:
-        logger.warning("🔧 RECOMMENDATION: Consider replacing banned/restricted workers")
+    if analysis['banned']:
+        logger.warning("🔧 RECOMMENDATION: Replace banned workers")
+    elif analysis['can_post']:
+        logger.info("✅ Workers ready for posting to target group!")
     else:
-        logger.info("✅ All workers are healthy!")
+        logger.error("❌ No workers can post to target group!")
 
 if __name__ == "__main__":
     asyncio.run(main()) 

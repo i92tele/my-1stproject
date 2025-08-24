@@ -29,21 +29,20 @@ class AutomatedScheduler:
         """Initialize the scheduler."""
         logger.info("Initializing automated scheduler...")
         
-        # Initialize workers
+        # Initialize workers with timeout
         await self._initialize_workers()
         
-        # Initialize posting service
+        # Initialize posting service (even without workers for now)
+        self.posting_service = PostingService(self.workers, self.database)
         if self.workers:
-            self.posting_service = PostingService(self.workers, self.database)
             logger.info(f"Scheduler initialized with {len(self.workers)} workers")
         else:
-            logger.error("No workers available - scheduler cannot start")
-            return False
+            logger.warning("No workers available - scheduler will run in monitoring mode only")
             
         return True
         
     async def _initialize_workers(self):
-        """Initialize worker accounts."""
+        """Initialize worker accounts with timeout."""
         logger.info("Initializing worker accounts...")
         
         # Load worker credentials from config
@@ -53,12 +52,16 @@ class AutomatedScheduler:
         worker_config = WorkerConfig()
         worker_creds = worker_config.load_workers_from_env()
         
-        # Create worker clients
+        if not worker_creds:
+            logger.warning("No worker credentials found - running without workers")
+            return
+        
+        # Create worker clients with timeout
         self.workers = []
         for i, creds in enumerate(worker_creds):
             # Add delay between worker initializations to reduce database contention
             if i > 0:
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)  # Reduced delay
             try:
                 worker = WorkerClient(
                     api_id=creds.api_id,
@@ -67,21 +70,29 @@ class AutomatedScheduler:
                     session_file=creds.session_file,
                     worker_id=creds.worker_id
                 )
-                success = await worker.connect()
-                if success:
-                    self.workers.append(worker)
-                    # Initialize worker limits in database
-                    try:
-                        await self.database.initialize_worker_limits(creds.worker_id)
-                    except Exception as e:
-                        logger.warning(f"Failed to initialize limits for worker {creds.worker_id}: {e}")
-                    logger.info(f"Worker {creds.worker_id} initialized successfully")
-                else:
-                    logger.warning(f"Worker {creds.worker_id} failed to connect")
+                
+                # Add timeout to worker connection
+                try:
+                    success = await asyncio.wait_for(worker.connect(), timeout=10.0)
+                    if success:
+                        self.workers.append(worker)
+                        # Initialize worker limits in database
+                        try:
+                            await self.database.initialize_worker_limits(creds.worker_id)
+                        except Exception as e:
+                            logger.warning(f"Failed to initialize limits for worker {creds.worker_id}: {e}")
+                        logger.info(f"Worker {creds.worker_id} initialized successfully")
+                    else:
+                        logger.warning(f"Worker {creds.worker_id} failed to connect")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Worker {creds.worker_id} connection timed out after 10 seconds")
+                except Exception as e:
+                    logger.error(f"Worker {creds.worker_id} connection error: {e}")
+                    
             except Exception as e:
                 logger.error(f"Failed to initialize worker {creds.worker_id}: {e}")
         
-        logger.info(f"Initialized {len(self.workers)} workers")
+        logger.info(f"Initialized {len(self.workers)} workers out of {len(worker_creds)} attempted")
         
     async def start(self):
         """Start the scheduler main loop."""
@@ -117,12 +128,13 @@ class AutomatedScheduler:
                 logger.info("No active ad slots found")
                 return
                 
-            # Post ads
-            # posting_service now fetches per-slot destinations
-            results = await self.posting_service.post_ads(ad_slots)
-            
-            # Log results
-            logger.info(f"Posting cycle completed: {results}")
+            # Post ads (only if we have workers)
+            if self.workers:
+                results = await self.posting_service.post_ads(ad_slots)
+                logger.info(f"Posting cycle completed: {results}")
+            else:
+                logger.info(f"Found {len(ad_slots)} ad slots but no workers available for posting")
+                
             self.last_run = datetime.now()
             
         except Exception as e:

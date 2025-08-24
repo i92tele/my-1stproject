@@ -9,11 +9,17 @@ class DatabaseManager:
     def __init__(self, db_path: str, logger):
         self.db_path = db_path
         self.logger = logger
-        self._lock = asyncio.Lock()
+        self._lock = None
+
+    def _get_lock(self):
+        """Get or create the async lock."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def initialize(self):
         """Initialize database with required tables."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -154,7 +160,7 @@ class DatabaseManager:
 
     async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user information."""
-        async with self._lock:
+        async with self._get_lock():
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -166,7 +172,7 @@ class DatabaseManager:
     async def create_or_update_user(self, user_id: int, username: str = None, 
                                   first_name: str = None, last_name: str = None) -> bool:
         """Create or update user record."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -183,7 +189,7 @@ class DatabaseManager:
 
     async def get_user_subscription(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user's subscription information."""
-        async with self._lock:
+        async with self._get_lock():
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -205,7 +211,7 @@ class DatabaseManager:
 
     async def update_subscription(self, user_id: int, tier: str, duration_days: int) -> bool:
         """Update user's subscription."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 expires = datetime.now() + timedelta(days=duration_days)
                 conn = sqlite3.connect(self.db_path)
@@ -224,7 +230,7 @@ class DatabaseManager:
 
     async def get_user_slots(self, user_id: int) -> List[Dict[str, Any]]:
         """Get all ad slots for a user."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 conn.row_factory = sqlite3.Row
@@ -250,7 +256,7 @@ class DatabaseManager:
 
     async def create_ad_slot(self, user_id: int, slot_number: int) -> Optional[int]:
         """Create a new ad slot for a user."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -268,7 +274,7 @@ class DatabaseManager:
 
     async def update_slot_content(self, slot_id: int, content: str, file_id: str = None) -> bool:
         """Update slot content."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -286,7 +292,7 @@ class DatabaseManager:
 
     async def add_slot_destination(self, slot_id: int, dest_type: str, dest_id: str, dest_name: str) -> bool:
         """Add destination to a slot."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 # Check if slot already has 10 destinations
                 conn = sqlite3.connect(self.db_path)
@@ -314,7 +320,7 @@ class DatabaseManager:
 
     async def remove_slot_destination(self, slot_id: int, dest_id: str) -> bool:
         """Remove destination from a slot."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -332,7 +338,7 @@ class DatabaseManager:
 
     async def get_slot_destinations(self, slot_id: int) -> List[Dict[str, Any]]:
         """Get all destinations for a slot."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 conn.row_factory = sqlite3.Row
@@ -350,7 +356,7 @@ class DatabaseManager:
 
     async def activate_slot(self, slot_id: int) -> bool:
         """Activate a slot."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -368,7 +374,7 @@ class DatabaseManager:
 
     async def deactivate_slot(self, slot_id: int) -> bool:
         """Deactivate a slot."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -407,7 +413,7 @@ class DatabaseManager:
 
     async def get_destination_by_id(self, dest_id: int, user_id: int) -> Optional[Dict[str, Any]]:
         """Legacy method - get destination by ID."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 conn.row_factory = sqlite3.Row
@@ -426,7 +432,7 @@ class DatabaseManager:
 
     async def set_destination_alias(self, dest_id: int, user_id: int, alias: str) -> bool:
         """Legacy method - set destination alias."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -446,7 +452,7 @@ class DatabaseManager:
 
     async def remove_destination(self, user_id: int, dest_id: int) -> bool:
         """Legacy method - remove destination."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -468,7 +474,7 @@ class DatabaseManager:
                            currency: str, status: str, expires_at: datetime, 
                            timeout_minutes: int) -> bool:
         """Record a new payment."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -485,7 +491,7 @@ class DatabaseManager:
 
     async def update_payment_status(self, payment_id: str, status: str) -> bool:
         """Update payment status."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -503,7 +509,7 @@ class DatabaseManager:
 
     async def get_payment(self, payment_id: str) -> Optional[Dict[str, Any]]:
         """Get payment by ID."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 conn.row_factory = sqlite3.Row
@@ -520,7 +526,7 @@ class DatabaseManager:
 
     async def get_pending_payments(self, age_limit_minutes: int) -> List[Dict[str, Any]]:
         """Get pending payments older than specified minutes."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 cutoff_time = datetime.now() - timedelta(minutes=age_limit_minutes)
                 conn = sqlite3.connect(self.db_path)
@@ -539,7 +545,7 @@ class DatabaseManager:
 
     async def get_expiring_subscriptions(self, days_from_now: int) -> List[Dict[str, Any]]:
         """Get subscriptions expiring within specified days."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 expiry_date = datetime.now() + timedelta(days=days_from_now)
                 conn = sqlite3.connect(self.db_path)
@@ -559,7 +565,7 @@ class DatabaseManager:
 
     async def increment_message_count(self, user_id: int) -> bool:
         """Increment message count for user."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 today = datetime.now().date()
                 conn = sqlite3.connect(self.db_path)
@@ -580,7 +586,7 @@ class DatabaseManager:
 
     async def get_all_users(self) -> List[Dict[str, Any]]:
         """Get all users."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 conn.row_factory = sqlite3.Row
@@ -595,7 +601,7 @@ class DatabaseManager:
 
     async def get_stats(self) -> Dict[str, Any]:
         """Get system statistics."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -641,7 +647,7 @@ class DatabaseManager:
 
     async def get_active_ads_to_send(self) -> List[Dict[str, Any]]:
         """Get active ad slots that are due for posting."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 conn.row_factory = sqlite3.Row
@@ -672,7 +678,7 @@ class DatabaseManager:
 
     async def update_slot_last_sent(self, slot_id: int) -> bool:
         """Update the last_sent_at timestamp for a slot."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -691,7 +697,7 @@ class DatabaseManager:
     async def log_ad_post(self, slot_id: int, destination_id: str, destination_name: str, 
                           worker_id: int, success: bool, error: str = None) -> bool:
         """Log an ad post attempt."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -708,7 +714,7 @@ class DatabaseManager:
 
     async def get_managed_groups(self, category: str = None) -> List[Dict[str, Any]]:
         """Get managed groups, optionally filtered by category."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 conn.row_factory = sqlite3.Row
@@ -736,7 +742,7 @@ class DatabaseManager:
 
     async def add_managed_group(self, group_id: str, group_name: str, category: str) -> bool:
         """Add a managed group."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -753,7 +759,7 @@ class DatabaseManager:
 
     async def remove_managed_group(self, group_name: str) -> bool:
         """Remove a managed group."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
@@ -769,7 +775,7 @@ class DatabaseManager:
 
     async def activate_subscription(self, user_id: int, tier: str, duration_days: int = 30) -> bool:
         """Activate or extend user subscription."""
-        async with self._lock:
+        async with self._get_lock():
             try:
                 # Get current subscription
                 current_sub = await self.get_user_subscription(user_id)

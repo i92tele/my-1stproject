@@ -1,88 +1,87 @@
 #!/usr/bin/env python3
 """
-Quick Status Check Script
-Checks current system state without terminal dependency
+Quick Status Check for AutoFarming Bot
+
+This script provides a quick overview of the current system status.
 """
 
-import asyncio
-import logging
-import json
+import sqlite3
+import os
 from datetime import datetime
-from database import DatabaseManager
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-async def check_system_status():
-    """Check current system status."""
-    print("🔍 Quick System Status Check")
+def quick_status_check():
+    """Perform a quick status check of the system."""
+    print("🔍 QUICK STATUS CHECK")
     print("=" * 50)
     
+    db_path = 'bot_database.db'
+    
+    if not os.path.exists(db_path):
+        print("❌ Database file not found!")
+        return
+    
+    print(f"✅ Database file exists: {db_path}")
+    
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
     try:
-        # Initialize database
-        db = DatabaseManager('bot_database.db', logger)
-        await db.initialize()
+        # Check tables
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+        print(f"\n📋 Tables found: {len(tables)}")
+        for table in sorted(tables):
+            print(f"  • {table}")
         
-        # Check user subscription
-        user_id = 7172873873
-        subscription = await db.get_user_subscription(user_id)
+        # Check worker_usage
+        if 'worker_usage' in tables:
+            cursor.execute("SELECT COUNT(*) FROM worker_usage")
+            worker_count = cursor.fetchone()[0]
+            print(f"\n👥 Worker Usage: {worker_count} records")
+            
+            if worker_count > 0:
+                cursor.execute("SELECT worker_id FROM worker_usage ORDER BY worker_id")
+                worker_ids = [row[0] for row in cursor.fetchall()]
+                print(f"  Worker IDs: {worker_ids}")
+                
+                # Check for duplicates
+                cursor.execute("SELECT worker_id, COUNT(*) FROM worker_usage GROUP BY worker_id HAVING COUNT(*) > 1")
+                duplicates = cursor.fetchall()
+                if duplicates:
+                    print(f"  ⚠️ Duplicates found: {len(duplicates)}")
+                else:
+                    print("  ✅ No duplicates")
         
-        print(f"📊 User {user_id} Status:")
-        if subscription:
-            print(f"  ✅ Subscription: {subscription.get('tier', 'none')}")
-            print(f"  📅 Expires: {subscription.get('subscription_expires', 'unknown')}")
-        else:
-            print("  ❌ No subscription found")
+        # Check worker_cooldowns
+        if 'worker_cooldowns' in tables:
+            cursor.execute("SELECT COUNT(*) FROM worker_cooldowns")
+            cooldown_count = cursor.fetchone()[0]
+            print(f"\n⏰ Worker Cooldowns: {cooldown_count} records")
         
-        # Check ad slots
-        slots = await db.get_or_create_ad_slots(user_id, subscription.get('tier', 'basic') if subscription else 'basic')
-        print(f"  📦 Ad Slots: {len(slots)}")
+        # Check ad_slots
+        if 'ad_slots' in tables:
+            cursor.execute("SELECT COUNT(*) FROM ad_slots")
+            slot_count = cursor.fetchone()[0]
+            print(f"\n📢 Ad Slots: {slot_count} records")
+            
+            if slot_count > 0:
+                cursor.execute("SELECT COUNT(*) FROM ad_slots WHERE last_sent_at IS NULL")
+                null_timestamps = cursor.fetchone()[0]
+                print(f"  Slots with NULL timestamps: {null_timestamps}")
         
-        # Check active slots
-        active_slots = await db.get_active_ad_slots()
-        print(f"  🚀 Active Slots: {len(active_slots)}")
+        # Check posting_history
+        if 'posting_history' in tables:
+            cursor.execute("SELECT COUNT(*) FROM posting_history")
+            history_count = cursor.fetchone()[0]
+            print(f"\n📜 Posting History: {history_count} records")
         
-        # Check destinations
-        total_destinations = 0
-        for slot in slots:
-            slot_destinations = await db.get_destinations_for_slot(slot.get('id'))
-            total_destinations += len(slot_destinations) if slot_destinations else 0
-        
-        print(f"  📍 Total Destinations: {total_destinations}")
-        
-        # Check managed groups
-        groups = await db.get_managed_groups()
-        print(f"  👥 Managed Groups: {len(groups)}")
-        
-        # Check active ads to send
-        active_ads = await db.get_active_ads_to_send()
-        print(f"  📝 Active Ads to Send: {len(active_ads)}")
-        
-        print("\n✅ System Status Check Complete")
-        
-        # Save results to file
-        results = {
-            "timestamp": datetime.now().isoformat(),
-            "user_id": user_id,
-            "subscription": subscription.get('tier') if subscription else None,
-            "total_slots": len(slots),
-            "active_slots": len(active_slots),
-            "total_destinations": total_destinations,
-            "managed_groups": len(groups),
-            "active_ads_to_send": len(active_ads)
-        }
-        
-        with open('status_check_results.json', 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        print("📄 Results saved to: status_check_results.json")
+        print(f"\n✅ Status check completed at {datetime.now()}")
         
     except Exception as e:
         print(f"❌ Error during status check: {e}")
-        logger.error(f"Status check error: {e}")
     finally:
-        await db.close()
+        conn.close()
 
 if __name__ == "__main__":
-    asyncio.run(check_system_status())
+    quick_status_check()
+

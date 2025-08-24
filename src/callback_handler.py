@@ -2,8 +2,8 @@ import logging
 from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from .core_systems import safe_rate_limit, safe_error_handling
-from .ui_manager import get_ui_manager
+from src.core_systems import safe_rate_limit, safe_error_handling
+from src.ui_manager import get_ui_manager
 
 class CallbackHandler:
     """Handle all callback queries for UI interactions."""

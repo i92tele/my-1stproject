@@ -19,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv('config/.env')
 
 from config import BotConfig
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 from commands import user_commands
 from commands import admin_commands
 

@@ -1,6 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, constants
 from telegram.ext import ContextTypes
-from ..decorators import rate_limit
+from src.decorators import rate_limit
 
 @rate_limit()
 async def add_destination(update: Update, context: ContextTypes.DEFAULT_TYPE):

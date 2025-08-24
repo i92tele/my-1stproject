@@ -13,7 +13,7 @@ import sys
 sys.path.append('src')
 
 from posting_service import PostingService, initialize_posting_service, start_posting_service_background
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 
 # Configure logging
 logging.basicConfig(

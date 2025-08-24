@@ -20,18 +20,18 @@ class AdminSlotDatabase:
         self.logger = logger
         
     async def migrate_admin_slots_table(self) -> bool:
-        """Migrate existing admin_ad_slots table to add missing columns."""
+        """Migrate existing admin_ad_slots table to add missing columns and create admin_slot_destinations table."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # Check if table exists
+            # Check if admin_ad_slots table exists
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='admin_ad_slots'")
             if not cursor.fetchone():
                 conn.close()
                 return True  # Table doesn't exist, no migration needed
             
-            # Add missing columns one by one
+            # Add missing columns to admin_ad_slots table
             columns_to_add = [
                 ('interval_minutes', 'INTEGER DEFAULT 60'),
                 ('last_sent_at', 'TIMESTAMP'),
@@ -47,6 +47,26 @@ class AdminSlotDatabase:
                         self.logger.debug(f"Column {column_name} already exists")
                     else:
                         self.logger.error(f"Error adding column {column_name}: {e}")
+            
+            # Create admin_slot_destinations table if it doesn't exist
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_slot_destinations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id INTEGER,
+                    destination_type TEXT,
+                    destination_id TEXT,
+                    destination_name TEXT,
+                    alias TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    requires_manual BOOLEAN DEFAULT 0,
+                    failure_count INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    last_error_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (slot_id) REFERENCES admin_ad_slots(id)
+                )
+            ''')
+            self.logger.info("Created admin_slot_destinations table")
             
             conn.commit()
             conn.close()

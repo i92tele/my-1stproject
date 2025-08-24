@@ -1,599 +1,301 @@
-#!/usr/bin/env python3
 import logging
-import os
-import sys
 import asyncio
-import warnings
-from datetime import datetime
-try:
-    from dotenv import load_dotenv
-except ImportError:
-    def load_dotenv(filename=None):
-        # Fallback function if dotenv is not available
-        pass
+import os
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes,
-    ConversationHandler, MessageHandler, filters
+    Application, ApplicationBuilder, CommandHandler, MessageHandler, filters,
+    ContextTypes, CallbackQueryHandler, ConversationHandler
 )
 
-# Suppress PTB warnings about conversation handlers
-warnings.filterwarnings("ignore", message=".*per_message=False.*CallbackQueryHandler.*")
+from src.config.bot_config import BotConfig
+from src.database.manager import DatabaseManager
+from src.services.blockchain_payments import BlockchainPaymentProcessor
+from src.notifications import NotificationManager
+from src.error_logger import TelegramErrorLogger
+from src.forwarding import MessageForwarder
+from src.filters import MessageFilter
+from commands import user_commands as user, admin_commands as admin, forwarding_commands as fwd_cmds, suggestion_commands as suggestions, subscription_commands as subs, admin_slot_commands as admin_slots
+from src.ui_manager import initialize_ui_manager
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv('config/.env')
+# --- Global logger setup ---
+LOGGER = logging.getLogger(__name__)
 
-from config import BotConfig
-from database import DatabaseManager
-from commands import user_commands
-from commands import admin_commands
-from commands import forwarding_commands
+# Background tasks
+background_tasks = []
 
-# Import new command modules
-try:
-    from commands import subscription_commands
-    SUBSCRIPTION_COMMANDS_AVAILABLE = True
-except ImportError:
-    SUBSCRIPTION_COMMANDS_AVAILABLE = False
-    logging.warning("Subscription commands not available")
+async def post_init(application: Application):
+    """Runs after the bot is initialized but before polling starts."""
+    await application.bot.set_my_commands([
+        ('start', 'Start the bot'), ('help', 'Show help'), 
+        ('subscribe', 'View subscription plans'), ('status', 'Check subscription status'), 
+        ('list_destinations', 'View destinations'), ('add_destination', 'Add destination'),
+        ('suggestions', 'Submit suggestions'), ('analytics', 'View analytics'),
+        ('cancel', 'Cancel operation'),
+        # Admin commands
+        ('admin', 'Admin menu'), ('admin_menu', 'Admin menu'), ('stats', 'Admin statistics'),
+        ('user', 'List users'), ('system', 'System status'), ('workers', 'Worker status'),
+        ('revenue', 'Revenue statistics'), ('payments', 'Pending payments'), ('health', 'Health check'),
+        ('admin_slots', 'Admin ad slots'), ('admin_slot_stats', 'Admin slot statistics'),
+    ])
+    LOGGER.info("Custom bot commands have been set.")
+    # Initialize database right after bot is ready
+    await application.bot_data['db'].initialize()
 
-try:
-    from commands import admin_slot_commands
-    ADMIN_SLOT_COMMANDS_AVAILABLE = True
-except ImportError:
-    ADMIN_SLOT_COMMANDS_AVAILABLE = False
-    logging.warning("Admin slot commands not available")
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Logs errors and notifies the admin."""
+    LOGGER.error("Exception while handling an update:", exc_info=context.error)
+    if 'error_logger' in context.bot_data:
+        await context.bot_data['error_logger'].notify(context.error)
 
-# Import new classes
-try:
-    from src.worker_manager import WorkerManager
-    from src.auto_poster import AutoPoster
-    from src.payment_processor import PaymentProcessor
-    from src.posting_service import PostingService
-    NEW_CLASSES_AVAILABLE = True
-except ImportError:
-    NEW_CLASSES_AVAILABLE = False
-    logging.warning("New classes not available")
+# Background tasks functionality temporarily disabled to fix event loop conflicts
+# Payment monitoring and scheduling will be handled by separate processes for now
 
-# Import payment processor
-try:
-    from src.payment_processor import initialize_payment_processor
-    PAYMENT_AVAILABLE = True
-except ImportError:
-    PAYMENT_AVAILABLE = False
-    logging.warning("Payment processor not available")
+# Only run if this file is executed directly (not imported)
+if __name__ == '__main__':
+    # --- Load Config and Logger at the start ---
+    load_dotenv('config/.env')
+    os.makedirs("data", exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
 
-# Import posting service
-try:
-    from src.posting_service import initialize_posting_service, start_posting_service_background
-    POSTING_SERVICE_AVAILABLE = True
-except ImportError:
-    POSTING_SERVICE_AVAILABLE = False
-    logging.warning("Posting service not available")
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.FileHandler("logs/bot.log"), logging.StreamHandler()]
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-class AutoFarmingBot:
-    """Main AutoFarming Bot application.
-    
-    Handles Telegram bot initialization, command routing, and lifecycle management.
-    """
-    
-    def __init__(self):
-        """Initialize the AutoFarming Bot.
+    # Fixed startup - let the bot handle its own event loop
+    try:
+        # Load environment and get token
+        bot_token = os.getenv('BOT_TOKEN')
+        if not bot_token:
+            LOGGER.error("BOT_TOKEN not found in environment")
+            exit(1)
         
-        Sets up configuration, database, application, and optional components.
-        """
-        try:
-            # Load configuration
-            self.config = BotConfig.load_from_env()
-            logger.info("Configuration loaded successfully")
-            
-            # Initialize database
-            self.db = DatabaseManager("bot_database.db", logger)
-            logger.info("Database manager initialized")
-            
-            # Build application with timeouts
-            self.app = Application.builder().token(self.config.bot_token).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
-            
-            # Set up bot data
-            self.app.bot_data.update({
-                'db': self.db, 
-                'config': self.config, 
-                'logger': logger
-            })
-            logger.info("Application built successfully")
-            
-            # Initialize optional components
-            self._initialize_optional_components()
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize bot: {e}")
-            raise
-    
-    def _initialize_optional_components(self):
-        """Initialize optional components if available."""
-        try:
-            # Initialize new components if available
-            if NEW_CLASSES_AVAILABLE:
-                self.worker_manager = WorkerManager(self.db, logger)
-                self.payment_processor = PaymentProcessor(self.db, logger)
-                # PostingService in current implementation takes (db_manager, logger)
-                self.posting_service = PostingService(self.db, logger)
-                self.app.bot_data.update({
-                    'worker_manager': self.worker_manager,
-                    'payment_processor': self.payment_processor,
-                    'posting_service': self.posting_service
-                })
-                logger.info("New components initialized successfully")
-            else:
-                self.worker_manager = None
-                self.payment_processor = None
-                self.posting_service = None
-                logger.warning("New components not available")
-            
-            # Initialize payment processor if available
-            if PAYMENT_AVAILABLE:
-                self.payment_processor = initialize_payment_processor(self.db, logger)
-                self.app.bot_data['payment_processor'] = self.payment_processor
-                logger.info("Payment processor initialized")
-            else:
-                self.payment_processor = None
-                logger.warning("Payment processor not available")
-            
-            # Initialize posting service if available
-            if POSTING_SERVICE_AVAILABLE:
-                self.posting_service = initialize_posting_service(self.db, logger)
-                self.app.bot_data['posting_service'] = self.posting_service
-                logger.info("Posting service initialized")
-            else:
-                self.posting_service = None
-                logger.warning("Posting service not available")
-            
-            # Initialize notification scheduler
-            try:
-                from notification_scheduler import NotificationScheduler
-                self.notification_scheduler = NotificationScheduler(self.app.bot, self.db, logger)
-                self.app.bot_data['notification_scheduler'] = self.notification_scheduler
-                logger.info("Notification scheduler initialized")
-                
-                # Note: Notification scheduler will be started when the bot starts
-                # asyncio.create_task() removed to avoid "no running event loop" error
-                logger.info("Notification scheduler ready to start")
-            except ImportError:
-                self.notification_scheduler = None
-                logger.warning("Notification scheduler not available")
-            except Exception as e:
-                self.notification_scheduler = None
-                logger.error(f"Error initializing notification scheduler: {e}")
-                
-        except Exception as e:
-            logger.error(f"Error initializing optional components: {e}")
-            # Continue without optional components
-
-    def setup_handlers(self):
-        """Set up all command and message handlers.
+        # Build Application
+        app = ApplicationBuilder().token(bot_token).post_init(post_init).build()
         
-        Configures conversation handlers, command handlers, and error handlers.
-        """
-        try:
-            # --- Conversation Handlers ---
-            set_content_conv = ConversationHandler(
-                entry_points=[CallbackQueryHandler(user_commands.set_content_start, pattern='^set_content:.*$')],
-                states={
-                    user_commands.SETTING_AD_CONTENT: [
-                        MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO, user_commands.set_content_receive),
-                        CallbackQueryHandler(user_commands.handle_content_category_selection, pattern='^category:.*$')
-                    ]
-                },
-                fallbacks=[CommandHandler('cancel', user_commands.cancel_conversation)],
-                per_chat=True,
-                per_message=False,  # Changed to False to allow MessageHandler
-                per_user=False
-            )
-            set_schedule_conv = ConversationHandler(
-                entry_points=[CallbackQueryHandler(user_commands.set_schedule_start, pattern='^set_schedule:.*$')],
-                states={user_commands.SETTING_AD_SCHEDULE: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_commands.set_schedule_receive)]},
-                fallbacks=[CommandHandler('cancel', user_commands.cancel_conversation)],
-                per_chat=True,
-                per_message=False,
-                per_user=False
-            )
-            set_destinations_conv = ConversationHandler(
-                entry_points=[CallbackQueryHandler(user_commands.set_destinations_start, pattern='^set_dests:.*$')],
-                states={user_commands.SETTING_AD_DESTINATIONS: [CallbackQueryHandler(user_commands.select_destination_category, pattern='^select_category:.*$')]},
-                fallbacks=[CommandHandler('cancel', user_commands.cancel_conversation)],
-                per_chat=True,
-                per_message=False,
-                per_user=False
-            )
-            
-            # --- Main Commands ---
-            self.app.add_handler(CommandHandler("my_ads", user_commands.my_ads_command))
-            self.app.add_handler(CommandHandler("start", user_commands.start))
-            self.app.add_handler(CommandHandler("help", user_commands.help_command))
-            self.app.add_handler(CommandHandler("subscribe", user_commands.subscribe))
-            self.app.add_handler(CommandHandler("analytics", user_commands.analytics_command))
-            self.app.add_handler(CommandHandler("referral", user_commands.referral_command))
-            self.app.add_handler(CommandHandler("status", user_commands.status))
-            # Bulk add groups command for admins
-            self.app.add_handler(CommandHandler("bulk_add_groups", admin_commands.bulk_add_groups))
-            # Built-in health checks (no terminal needed)
-            self.app.add_handler(CommandHandler("system_check", admin_commands.system_check))
-            self.app.add_handler(CommandHandler("scheduler_check", admin_commands.scheduler_check))
-            self.app.add_handler(CommandHandler("schema_check", admin_commands.schema_check))
-            self.app.add_handler(CommandHandler("fix_payment", admin_commands.fix_payment))
-            self.app.add_handler(CommandHandler("test_pricing", admin_commands.test_pricing))
-            self.app.add_handler(CommandHandler("delete_test_user", admin_commands.delete_test_user))
-            logger.info("Main command handlers configured")
-            
-            # --- Forwarding Commands ---
-            self.app.add_handler(CommandHandler("add_destination", forwarding_commands.add_destination_command))
-            self.app.add_handler(CommandHandler("list_destinations", forwarding_commands.list_destinations))
-            self.app.add_handler(CommandHandler("remove_destination", forwarding_commands.remove_destination))
-            logger.info("Forwarding command handlers configured")
-            
-            # --- Admin Commands ---
-            self.app.add_handler(CommandHandler("add_group", admin_commands.add_group))
-            self.app.add_handler(CommandHandler("list_groups", admin_commands.list_groups))
-            self.app.add_handler(CommandHandler("remove_group", admin_commands.remove_group))
-            self.app.add_handler(CommandHandler("admin_stats", admin_commands.admin_stats))
-            self.app.add_handler(CommandHandler("posting_status", admin_commands.posting_service_status))
-            self.app.add_handler(CommandHandler("verify_payment", admin_commands.verify_payment))
-            self.app.add_handler(CommandHandler("revenue_stats", admin_commands.revenue_stats))
-            self.app.add_handler(CommandHandler("pending_payments", admin_commands.pending_payments))
-            self.app.add_handler(CommandHandler("worker_status", admin_commands.worker_status))
-            self.app.add_handler(CommandHandler("admin_warnings", admin_commands.admin_warnings))
-            self.app.add_handler(CommandHandler("increase_limits", admin_commands.increase_worker_limits))
-            self.app.add_handler(CommandHandler("capacity_check", admin_commands.worker_capacity_check))
-            self.app.add_handler(CommandHandler("activate_subscription", admin_commands.activate_subscription))
-            self.app.add_handler(CommandHandler("list_users", admin_commands.list_users))
-            self.app.add_handler(CommandHandler("admin_menu", admin_commands.admin_menu))
-            
-            # --- New Subscription Commands ---
-            if SUBSCRIPTION_COMMANDS_AVAILABLE:
-                self.app.add_handler(CommandHandler("upgrade_subscription", subscription_commands.upgrade_subscription))
-                self.app.add_handler(CommandHandler("prolong_subscription", subscription_commands.prolong_subscription))
-                logger.info("Subscription commands registered")
-            
-            # --- New Admin Slot Commands ---
-            if ADMIN_SLOT_COMMANDS_AVAILABLE:
-                self.app.add_handler(CommandHandler("admin_slots", admin_slot_commands.admin_slots))
-                logger.info("Admin slot commands registered")
-            self.app.add_handler(CommandHandler("test_admin", admin_commands.test_admin))
-            self.app.add_handler(CommandHandler("fix_user_slots", admin_commands.fix_user_slots))
-            self.app.add_handler(CommandHandler("failed_groups", admin_commands.failed_groups))
-            self.app.add_handler(CommandHandler("retry_group", admin_commands.retry_group))
-            self.app.add_handler(CommandHandler("paused_slots", admin_commands.paused_slots))
-            logger.info("Admin command handlers configured")
-
-            # --- Conversation Handlers (must be before general callback handler) ---
-            self.app.add_handler(set_content_conv)
-            self.app.add_handler(set_schedule_conv)
-            self.app.add_handler(set_destinations_conv)
-            logger.info("Conversation handlers configured")
-
-            # --- General Callback Handler for other buttons ---
-            self.app.add_handler(CallbackQueryHandler(self.handle_callback))
-
-            # --- Error Handler ---
-            self.app.add_error_handler(self.error_handler)
-            logger.info("Error handler configured")
-
-            # --- Admin Text Input Handler for inline flows (non-blocking) ---
-            self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_commands.handle_admin_text, block=False))
-            
-        except Exception as e:
-            logger.error(f"Error setting up handlers: {e}")
-            raise
-
-    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle callback queries from inline keyboards.
+        # Initialize components
+        config = BotConfig.load_from_env()
+        db = DatabaseManager("bot_database.db", LOGGER)
+        notifier = NotificationManager(app.bot, LOGGER)
+        payments = BlockchainPaymentProcessor(db, notifier, config, LOGGER)
+        message_filter = MessageFilter(LOGGER)
+        forwarder = MessageForwarder(db, config, LOGGER, message_filter)
+        ui_manager = initialize_ui_manager(LOGGER)
         
-        Args:
-            update: Telegram update object
-            context: Bot context
-            
-        Returns:
-            None
-        """
-        try:
+        app.bot_data.update({
+            'db': db, 'config': config, 'payments': payments,
+            'notifier': notifier, 'forwarder': forwarder, 'logger': LOGGER,
+            'ui_manager': ui_manager,
+            'error_logger': TelegramErrorLogger(config.admin_ids[0] if config.admin_ids else 0, app.bot, LOGGER)
+        })
+
+        # Add handlers
+        suggestion_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(suggestions.start_suggestion_input, pattern='^submit_suggestion$')],
+            states={
+                suggestions.WAITING_FOR_SUGGESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, suggestions.handle_suggestion_text)],
+            },
+            fallbacks=[CommandHandler("cancel", user.cancel_conversation), MessageHandler(filters.Regex(r'(?i)^cancel$'), user.cancel_conversation)],
+            conversation_timeout=300,
+            per_message=True  # Changed to True to fix PTBUserWarning
+        )
+
+        # Ad content setting conversation
+        ad_content_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(user.set_content_start, pattern='^set_content:')],
+            states={
+                user.SETTING_AD_CONTENT: [
+                    CallbackQueryHandler(user.handle_content_category_selection, pattern='^category:'),
+                    MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO, user.set_content_receive)
+                ],
+            },
+            fallbacks=[CommandHandler("cancel", user.cancel_conversation)],
+            conversation_timeout=300,
+            per_message=True
+        )
+
+        # Ad schedule setting conversation
+        ad_schedule_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(user.set_schedule_start, pattern='^set_schedule:')],
+            states={
+                user.SETTING_AD_SCHEDULE: [MessageHandler(filters.TEXT & ~filters.COMMAND, user.set_schedule_receive)],
+            },
+            fallbacks=[CommandHandler("cancel", user.cancel_conversation)],
+            conversation_timeout=300,
+            per_message=True
+        )
+
+        # Ad destinations setting conversation
+        ad_destinations_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(user.set_destinations_start, pattern='^set_dests:')],
+            states={
+                user.SETTING_AD_DESTINATIONS: [CallbackQueryHandler(user.select_destination_category, pattern='^select_category:')],
+            },
+            fallbacks=[CommandHandler("cancel", user.cancel_conversation)],
+            conversation_timeout=300,
+            per_message=True
+        )
+
+        app.add_error_handler(error_handler)
+        app.add_handler(suggestion_handler)
+        app.add_handler(ad_content_handler)
+        app.add_handler(ad_schedule_handler)
+        app.add_handler(ad_destinations_handler)
+
+        command_handlers = {
+            "start": user.start, "help": user.help_command, "subscribe": user.subscribe,
+            "status": user.status, "cancel": user.cancel_conversation, "analytics": user.analytics_command,
+            "list_destinations": fwd_cmds.list_destinations, "add_destination": fwd_cmds.add_destination_command,
+            "suggestions": suggestions.show_suggestions_menu,
+            # Admin commands
+            "admin": admin.admin_menu, "admin_menu": admin.admin_menu, "stats": admin.admin_stats, 
+            "user": admin.list_users, "system": admin.system_status, "workers": admin.worker_status,
+            "revenue": admin.revenue_stats, "payments": admin.pending_payments, "health": admin.health_stats,
+            "test_admin": admin.test_admin, "add_group": admin.add_group, "list_groups": admin.list_groups,
+            "admin_stats": admin.admin_stats, "admin_warnings": admin.admin_warnings, "admin_suggestions": admin.admin_suggestions,
+            # Admin slot commands
+            "admin_slots": admin_slots.admin_slots, "admin_slot_stats": admin_slots.admin_slot_stats
+        }
+        for command, handler in command_handlers.items():
+            app.add_handler(CommandHandler(command, handler))
+
+        # Wrapper function for admin callback to extract action and parts
+        async def admin_callback_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            """Wrapper to extract action and parts from callback data for admin handler."""
             query = update.callback_query
             if not query or not query.data:
-                logger.error("Invalid callback query")
                 return
-                
+            
             data = query.data
-            
-            # Add small delay to prevent rapid-fire requests
-            await asyncio.sleep(0.1)
-            
-            # Route callbacks to appropriate handlers
-            if data.startswith("manage_slot:") or data == "back_to_slots" or data.startswith("toggle_ad:"):
-                await user_commands.handle_ad_slot_callback(update, context)
-            elif data.startswith("subscribe:") or data.startswith("pay:") or data.startswith("check_payment:") or data.startswith("cancel_payment:") or data.startswith("copy_address:"):
-                await user_commands.handle_subscription_callback(update, context)
-            elif data.startswith("cmd:"):
-                await user_commands.handle_command_callback(update, context)
-            elif data.startswith("crypto:"):
-                await user_commands.handle_crypto_selection_callback(update, context)
-            elif data.startswith("select_category:"):
-                await user_commands.select_destination_category(update, context)
-            elif data.startswith("remove_dest:"):
-                await forwarding_commands.handle_remove_destination_callback(update, context)
-            elif data.startswith("dest:"):
-                await forwarding_commands.handle_destinations_callback(update, context)
-            elif data.startswith("admin:"):
-                await self._handle_admin_callback(update, context, data)
-            elif data == "compare_plans":
-                await user_commands.compare_plans_callback(update, context)
-            elif data == "help":
-                await user_commands.help_command_callback(update, context)
-            elif data.startswith("slot:"):
-                await user_commands.handle_ad_slot_callback(update, context)
-            elif data.startswith("category:"):
-                # Parse category callback data: category:{slot_id}:{category}
+            if data.startswith("cmd:"):
                 parts = data.split(":")
-                if len(parts) == 3:
-                    slot_id = parts[1]
-                    category = parts[2]
-                    await user_commands.handle_category_selection(update, context, slot_id, category)
-                else:
-                    await query.answer("Invalid category selection")
-                    logger.warning(f"Invalid category callback data: {data}")
-            elif data.startswith("cancel_payment:") or data.startswith("copy_address:") or data.startswith("check_payment:"):
-                await user_commands.handle_subscription_callback(update, context)
-            elif data.startswith("upgrade:") or data.startswith("prolong:") or data.startswith("check_upgrade_payment:") or data.startswith("check_prolong_payment:"):
-                if SUBSCRIPTION_COMMANDS_AVAILABLE:
-                    await subscription_commands.handle_subscription_callback(update, context)
-                else:
-                    await query.answer("Subscription features not available")
-            elif data.startswith("admin_slot:") or data.startswith("admin_quick_post") or data.startswith("admin_post_slot:") or data.startswith("admin_set_content:") or data.startswith("admin_set_destinations:") or data.startswith("admin_toggle_slot:") or data.startswith("admin_slot_stats") or data == "admin_slots_refresh" or data == "admin_slots" or data.startswith("admin_category:") or data.startswith("admin_toggle_dest:") or data.startswith("admin_select_category:") or data.startswith("admin_clear_category:") or data.startswith("admin_select_all:") or data.startswith("admin_clear_all:") or data.startswith("admin_save_destinations:") or data.startswith("admin_delete_slot:") or data.startswith("admin_slot_analytics:") or data.startswith("admin_content_template:") or data.startswith("admin_clear_content:") or data.startswith("admin_quick_post_send") or data.startswith("admin_quick_post_template") or data == "admin_menu" or data.startswith("admin_detailed_analytics") or data.startswith("admin_export_stats") or data == "admin_clear_all_content" or data == "admin_clear_all_destinations" or data == "admin_purge_all_slots" or data == "admin_confirm_purge_all_slots":
-                if ADMIN_SLOT_COMMANDS_AVAILABLE:
-                    await admin_slot_commands.handle_admin_slot_callback(update, context)
-                else:
-                    await query.answer("Admin slot features not available")
+                action = parts[1] if len(parts) > 1 else ""
+                await admin.handle_admin_callback(update, context, action, parts)
             else:
-                await query.answer("This feature is coming soon!")
-                logger.warning(f"Unknown callback data: {data}")
-                
-        except Exception as e:
-            logger.error(f"Error in handle_callback: {e}")
-            try:
-                await update.callback_query.answer("An error occurred. Please try again.")
-            except:
-                pass
-    
-    async def _handle_admin_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
-        """Handle admin-specific callbacks.
-        
-        Args:
-            update: Telegram update object
-            context: Bot context
-            data: Callback data string
-            
-        Returns:
-            None
-        """
-        try:
-            if not data or ":" not in data:
-                logger.error("Invalid admin callback data")
-                await update.callback_query.answer("Invalid admin action")
+                # Handle other admin callbacks that start with admin:
+                parts = data.split(":")
+                action = parts[1] if len(parts) > 1 else ""
+                await admin.handle_admin_callback(update, context, action, parts)
+
+        # Wrapper function for user command callbacks (cmd:*)
+        async def user_cmd_callback_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            """Wrapper for user command callbacks starting with cmd:"""
+            query = update.callback_query
+            if not query or not query.data:
                 return
-                
-            action = data.split(":")[1]
             
-            # Route admin actions
-            if action == "restart_posting":
-                await admin_commands.restart_posting_service(update, context)
-            elif action == "pause_posting":
-                await admin_commands.pause_posting_service(update, context)
-            elif action == "detailed_stats":
-                await admin_commands.posting_service_status(update, context)
-            elif action == "service_config":
-                await update.callback_query.answer("Service configuration coming soon!")
-            elif (
-                action.startswith("edit_group_cat") or
-                action.startswith("set_group_cat") or
-                action.startswith("edit_group_cat_custom") or
-                action.startswith("remove_group") or
-                action.startswith("purge_menu") or
-                action.startswith("purge_category") or
-                action.startswith("confirm_purge_category") or
-                action.startswith("purge_group") or
-                action == "purge_all_groups" or
-                action == "confirm_purge_all" or
-                action == "back_to_groups" or
-                action == "add_to_category_menu" or
-                action.startswith("add_to_category") or
-                action.startswith("list_cat") or
-                action.startswith("show_admin_all") or
-                action.startswith("delete_user")
-            ):
-                await admin_commands.handle_admin_callback(update, context, action, data.split(":"))
-            else:
-                logger.warning(f"Unknown admin action: {action}")
-                await update.callback_query.answer("Unknown admin action")
+            data = query.data
+            if data.startswith("cmd:"):
+                # Check if this is an admin command and route accordingly
+                command = data.split(":")[1] if len(data.split(":")) > 1 else ""
                 
-        except Exception as e:
-            logger.error(f"Error in admin callback: {e}")
-            await update.callback_query.answer("Admin action failed")
+                # List of admin commands that should be routed to admin handler
+                admin_commands = [
+                    "admin_menu", "list_users", "admin_stats", "system_check", 
+                    "posting_status", "failed_groups", "paused_slots", "revenue_stats",
+                    "worker_status", "system_status", "list_groups",
+                    "admin_ads_analysis", "admin_warnings", "admin_suggestions"
+                ]
+                
+                # User commands that should be routed to user handler
+                user_commands = ["start", "analytics", "referral", "subscribe", "my_ads", "help", "suggestions"]
+                
+                if command in admin_commands:
+                    # Route to admin callback handler
+                    await admin_callback_wrapper(update, context)
+                elif command == "admin_slots":
+                    # Route to admin slot callback handler
+                    await admin_slots.handle_admin_slot_callback(update, context)
+                elif command in user_commands:
+                    # Route to user callback handler
+                    await user.handle_command_callback(update, context)
+                else:
+                    # Unknown command
+                    logger.warning(f"Unknown command: {command}")
+                    await query.answer("❌ Unknown command")
+                    await query.edit_message_text("❌ Unknown command")
+            else:
+                # This shouldn't happen but handle gracefully
+                await query.answer("❌ Invalid command")
+                await query.edit_message_text("❌ Invalid command")
 
-    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
-        """Handle errors in bot operations.
+        callback_handlers = {
+            # User command callbacks (cmd:*)
+            '^cmd:': user_cmd_callback_wrapper,
+            # Subscription flow callbacks
+            '^subscribe:': user.handle_subscription_callback,
+            '^crypto:': user.handle_subscription_callback,
+            '^check_payment:': user.handle_subscription_callback,
+            '^cancel_payment:': user.handle_subscription_callback,
+            '^copy_address:': user.handle_subscription_callback,
+            '^compare_plans$': user.handle_subscription_callback,
+            '^back_to_plans$': user.handle_subscription_callback,
+            # Ad slot management callbacks (non-conversation)
+            '^manage_slot:': user.handle_ad_slot_callback,
+            '^toggle_ad:': user.handle_ad_slot_callback,
+            '^back_to_slots$': user.handle_ad_slot_callback,
+            '^slot_analytics:': user.handle_subscription_callback,
+            # Legacy subscription handlers (cleanup needed)
+            '^start_subscribe$': user.subscribe, '^start_help$': user.help_command,
+            '^subscribe_': user.subscribe, '^settings_status$': user.status,
+            '^settings_destinations$': fwd_cmds.list_destinations, r'^remove_dest_': fwd_cmds.handle_remove_destination_callback,
+            '^add_destination_shortcut$': fwd_cmds.add_destination_command, '^cancel_action$': user.cancel_conversation,
+            # Admin callbacks
+            '^admin:': admin_callback_wrapper,
+            # Suggestion callbacks
+            '^submit_suggestion$': suggestions.start_suggestion_input,
+            '^my_suggestions$': suggestions.show_user_suggestions,
+            '^suggestion_stats$': suggestions.show_suggestion_stats,
+            '^cancel_suggestions$': suggestions.cancel_suggestions,
+            '^suggestions_menu$': suggestions.show_suggestions_menu,
+            # Admin slot callbacks
+            '^admin_slot': admin_slots.handle_admin_slot_callback,
+            '^admin_toggle_slot:': admin_slots.handle_admin_slot_callback,
+            '^admin_set_content:': admin_slots.handle_admin_slot_callback,
+            '^admin_set_destinations:': admin_slots.handle_admin_slot_callback,
+            '^admin_post_slot:': admin_slots.handle_admin_slot_callback,
+            '^admin_delete_slot:': admin_slots.handle_admin_slot_callback,
+            '^admin_slot_analytics:': admin_slots.handle_admin_slot_callback,
+            '^admin_quick_post': admin_slots.handle_admin_slot_callback,
+            '^admin_quick_post_send': admin_slots.handle_admin_slot_callback,
+            '^admin_quick_post_template': admin_slots.handle_admin_slot_callback,
+            '^admin_slots': admin_slots.handle_admin_slot_callback,
+            '^admin_slots_refresh': admin_slots.handle_admin_slot_callback,
+            '^admin_category:': admin_slots.handle_admin_slot_callback,
+            '^admin_toggle_dest:': admin_slots.handle_admin_slot_callback,
+            '^admin_select_category:': admin_slots.handle_admin_slot_callback,
+            '^admin_clear_category:': admin_slots.handle_admin_slot_callback,
+            '^admin_select_all:': admin_slots.handle_admin_slot_callback,
+            '^admin_clear_all:': admin_slots.handle_admin_slot_callback,
+            '^admin_save_destinations:': admin_slots.handle_admin_slot_callback,
+            '^admin_slot_stats': admin_slots.handle_admin_slot_callback,
+            '^admin_clear_all_content': admin_slots.handle_admin_slot_callback,
+            '^admin_clear_all_destinations': admin_slots.handle_admin_slot_callback,
+            '^admin_purge_all_slots': admin_slots.handle_admin_slot_callback,
+            '^admin_confirm_purge_all_slots': admin_slots.handle_admin_slot_callback
+        }
+        for pattern, handler in callback_handlers.items():
+            app.add_handler(CallbackQueryHandler(handler, pattern=pattern))
+
+        app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, forwarder.handle_edited_message))
         
-        Args:
-            update: Telegram update object (may be None)
-            context: Bot context with error information
-            
-        Returns:
-            None
-        """
-        try:
-            error = context.error
-            logger.error(f"Exception while handling an update: {error}", exc_info=error)
-            
-            # Handle specific error types
-            if hasattr(context, 'error') and 'timeout' in str(error).lower():
-                logger.warning("Timeout detected, continuing...")
-            elif hasattr(context, 'error') and 'unauthorized' in str(error).lower():
-                logger.error("Bot token unauthorized - check configuration")
-            elif hasattr(context, 'error') and 'forbidden' in str(error).lower():
-                logger.error("Bot forbidden - check permissions")
-            else:
-                logger.error(f"Unhandled error: {error}")
-                
-        except Exception as e:
-            logger.error(f"Error in error handler: {e}")
-            
-    async def _rate_limit_check(self, user_id: int) -> bool:
-        """Simple rate limiting to prevent spam."""
-        current_time = datetime.now().timestamp()
+        # Add admin content message handler (must come before general message handler)
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_slots.handle_admin_content_message))
         
-        if not hasattr(self, '_user_last_command'):
-            self._user_last_command = {}
-            
-        if user_id in self._user_last_command:
-            time_diff = current_time - self._user_last_command[user_id]
-            if time_diff < 1.0:  # 1 second between commands
-                return False
-                
-        self._user_last_command[user_id] = current_time
-        return True
+        app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forwarder.handle_message))
 
-    async def post_init(self, app: Application):
-        logger.info("Initializing bot services...")
-        try:
-            await asyncio.wait_for(self.db.initialize(), timeout=30.0)
-            
-            # Check if external scheduler is running (disable internal components)
-            disable_internal = os.getenv('DISABLE_INTERNAL_POSTING_SERVICE', '0') == '1'
-            
-            if disable_internal:
-                logger.info("External scheduler detected - skipping internal worker/posting initialization")
-            else:
-                # Initialize worker manager if available
-                if self.worker_manager:
-                    await asyncio.wait_for(self.worker_manager.initialize_workers(), timeout=30.0)
-                    logger.info("Worker manager initialized successfully!")
-                
-                # Initialize payment processor if available
-                if self.payment_processor:
-                    await asyncio.wait_for(self.payment_processor.initialize(), timeout=30.0)
-                    logger.info("Payment processor initialized successfully!")
-                
-                # Initialize and start posting service if available and not disabled
-                if self.posting_service:
-                    await asyncio.wait_for(self.posting_service.initialize(), timeout=30.0)
-                    logger.info("Posting service initialized successfully!")
-                    
-                    # Start posting service as background task
-                    try:
-                        asyncio.create_task(self.posting_service.start_service())
-                        logger.info("Posting service started as background task!")
-                    except Exception as e:
-                        logger.error(f"Failed to start posting service: {e}")
-                
-                # Start notification scheduler if available
-                if self.notification_scheduler:
-                    try:
-                        asyncio.create_task(self.notification_scheduler.start())
-                        logger.info("Notification scheduler started as background task!")
-                    except Exception as e:
-                        logger.error(f"Failed to start notification scheduler: {e}")
-            
-            logger.info("Bot initialization complete!")
-        except asyncio.TimeoutError:
-            logger.error("Database initialization timed out!")
-            raise
-        except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-            raise
-
-    async def shutdown(self, app: Application):
-        logger.info("Shutting down bot...")
-        try:
-            # Check if external scheduler is running
-            disable_internal = os.getenv('DISABLE_INTERNAL_POSTING_SERVICE', '0') == '1'
-            
-            if not disable_internal:
-                # Close worker connections if available
-                if self.worker_manager:
-                    try:
-                        await asyncio.wait_for(self.worker_manager.close_all_workers(), timeout=10.0)
-                        logger.info("Worker manager closed successfully!")
-                    except Exception as e:
-                        logger.warning(f"Error closing worker manager: {e}")
-                
-                # Close payment processor if available
-                if self.payment_processor:
-                    try:
-                        await asyncio.wait_for(self.payment_processor.close(), timeout=10.0)
-                        logger.info("Payment processor closed successfully!")
-                    except Exception as e:
-                        logger.warning(f"Error closing payment processor: {e}")
-                
-                # Stop posting service if available
-                if self.posting_service:
-                    try:
-                        # Properly stop the async posting service
-                        await asyncio.wait_for(self.posting_service.stop_service(), timeout=10.0)
-                        logger.info("Posting service stopped successfully!")
-                    except Exception as e:
-                        logger.warning(f"Error stopping posting service: {e}")
-            else:
-                logger.info("External scheduler mode - skipping internal component shutdown")
-            
-            await asyncio.wait_for(self.db.close(), timeout=10.0)
-        except asyncio.TimeoutError:
-            logger.warning("Database close timed out, forcing close...")
-        except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
-
-    def run(self):
-        """Run the bot."""
-        lock_file = "bot.lock"
-        if os.path.exists(lock_file):
-            logger.error("Lock file exists. Another instance may be running. Exiting.")
-            return
-        try:
-            # Remove stale lock if process is not running
-            if os.path.exists(lock_file):
-                try:
-                    with open(lock_file, 'r') as f:
-                        pid_str = f.read().strip()
-                    if pid_str.isdigit():
-                        pid = int(pid_str)
-                        if pid != os.getpid():
-                            try:
-                                os.kill(pid, 0)
-                                logger.error("Another instance appears to be running. Exiting.")
-                                return
-                            except OSError:
-                                logger.warning("Stale lock detected. Removing.")
-                                os.remove(lock_file)
-                except Exception:
-                    logger.warning("Could not verify existing lock. Removing to proceed.")
-                    try: os.remove(lock_file)
-                    except Exception: pass
-
-            with open(lock_file, "w") as f: f.write(str(os.getpid()))
-            self.setup_handlers()
-            self.app.post_init = self.post_init
-            self.app.post_shutdown = self.shutdown
-            logger.info(f"Starting bot...")
-            # Add timeout and error handling for polling
-            self.app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-        except KeyboardInterrupt:
-            logger.info("Received interrupt signal, shutting down gracefully...")
-        except Exception as e:
-            logger.error(f"Bot crashed: {e}")
-        finally:
-            if os.path.exists(lock_file): 
-                os.remove(lock_file)
-                logger.info("Lock file removed. Bot shut down cleanly.")
-
-if __name__ == '__main__':
-    bot = AutoFarmingBot()
-    bot.run()
+        # Run the bot - let it handle its own event loop
+        LOGGER.info("Bot is starting...")
+        app.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query", "edited_message"]
+        )
+        
+    except (KeyboardInterrupt, SystemExit):
+        LOGGER.info("Bot stopped.")
+    except Exception as e:
+        LOGGER.error(f"Bot startup error: {e}")
+        raise

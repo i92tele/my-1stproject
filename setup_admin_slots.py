@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
 
 from config import BotConfig
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 from database_migration import run_database_migration
 
 # Configure logging

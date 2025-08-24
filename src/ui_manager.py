@@ -2,7 +2,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import ContextTypes
-from .core_systems import safe_rate_limit, safe_error_handling
+from src.core_systems import safe_rate_limit, safe_error_handling
 
 class UIManager:
     """Production-ready UI manager for button-based menus."""

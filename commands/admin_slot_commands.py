@@ -152,7 +152,7 @@ async def admin_slots(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🔄 Refresh", callback_data="admin_slots_refresh")
         ])
         keyboard.append([
-            InlineKeyboardButton("🔙 Back to Main Menu", callback_data="cmd:start")
+            InlineKeyboardButton("🔙 Back to Admin Menu", callback_data="cmd:admin_menu")
         ])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -199,12 +199,13 @@ async def admin_slot_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             safe_content = content.replace('*', '\\*').replace('_', '\\_').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('`', '\\`').replace('~', '\\~')
             if len(safe_content) > 100:
                 safe_content = safe_content[:97] + '...'
+            content_status = f"✅ Set: {safe_content}"
         else:
-            safe_content = '(Not Set)'
+            content_status = "❌ Not Set"
         
         message_text = f"🎯 **Admin Slot {slot_number}**\n\n"
         message_text += f"**Status:** {'✅ Active' if slot['is_active'] else '⏸️ Paused'}\n"
-        message_text += f"**Content:** {safe_content}\n"
+        message_text += f"**Content:** {content_status}\n"
         message_text += f"**Destinations:** {len(destinations)} groups\n"
         message_text += f"**Created:** {slot['created_at']}\n"
         message_text += f"**Updated:** {slot['updated_at']}\n\n"
@@ -349,7 +350,7 @@ async def handle_admin_content_message(update: Update, context: ContextTypes.DEF
     try:
         # Check if we're waiting for admin content
         if not context.user_data.get('awaiting_admin_content'):
-            return False  # Not handling this message
+            return False  # Not handling this message, let other handlers process it
             
         # Check admin status
         config = context.bot_data.get('config')
@@ -380,7 +381,7 @@ async def handle_admin_content_message(update: Update, context: ContextTypes.DEF
             content = update.message.caption
         
         # Update slot content
-        success = await db.update_admin_slot_content(slot['id'], content)
+        success = await db.update_admin_slot_content(slot_number, content)
         
         if success:
             keyboard = [
@@ -391,7 +392,12 @@ async def handle_admin_content_message(update: Update, context: ContextTypes.DEF
             
             await update.message.reply_text(
                 f"✅ **Content saved for Admin Slot {slot_number}!**\n\n"
-                f"Your content has been successfully saved and is ready for posting.",
+                f"**Content Preview:**\n{content[:200]}{'...' if len(content) > 200 else ''}\n\n"
+                f"Your content has been successfully saved and is ready for posting.\n"
+                f"📊 **Next Steps:**\n"
+                f"• Set destinations for this slot\n"
+                f"• Toggle slot to Active\n"
+                f"• Use 'Post Now' to test immediately",
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
@@ -866,7 +872,7 @@ async def admin_toggle_slot(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         
         # Toggle status
         new_status = not slot['is_active']
-        success = await db.update_admin_slot_status(slot['id'], new_status)
+        success = await db.update_admin_slot_status(slot_number, new_status)
         
         if success:
             status_text = "activated ✅" if new_status else "deactivated ⏸️"
@@ -999,7 +1005,7 @@ async def handle_admin_slot_callback(update: Update, context: ContextTypes.DEFAU
         elif data == "admin_slots_refresh":
             await admin_slots(update, context)
             
-        elif data == "admin_slots":
+        elif data == "admin_slots" or data == "cmd:admin_slots":
             await admin_slots(update, context)
             
         elif data == "admin_clear_all_content":
@@ -1173,7 +1179,7 @@ async def admin_confirm_purge_all_slots(update: Update, context: ContextTypes.DE
         keyboard = [
             [
                 InlineKeyboardButton("🆕 Create New Slots", callback_data="admin_slots"),
-                InlineKeyboardButton("🔙 Back to Menu", callback_data="cmd:start")
+                InlineKeyboardButton("🔙 Back to Admin Menu", callback_data="cmd:admin_menu")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1184,3 +1190,78 @@ async def admin_confirm_purge_all_slots(update: Update, context: ContextTypes.DE
     except Exception as e:
         logger.error(f"Error in admin_confirm_purge_all_slots: {e}")
         await update.callback_query.answer("❌ Error during purge")
+
+async def admin_delete_slot(update: Update, context: ContextTypes.DEFAULT_TYPE, slot_number: int):
+    """Delete an admin slot."""
+    if not await check_admin(update, context):
+        await update.callback_query.answer("❌ Admin access required.")
+        return
+        
+    try:
+        db = context.bot_data['db']
+        
+        # Delete the slot
+        success = await db.delete_admin_slot(slot_number)
+        
+        if success:
+            await update.callback_query.answer("✅ Slot deleted successfully")
+            # Go back to admin slots overview
+            await admin_slots(update, context)
+        else:
+            await update.callback_query.answer("❌ Failed to delete slot")
+        
+    except Exception as e:
+        logger.error(f"Error in admin_delete_slot: {e}")
+        await update.callback_query.answer("❌ Error deleting slot")
+
+
+async def admin_slot_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE, slot_number: int):
+    """Show analytics for a specific admin slot."""
+    if not await check_admin(update, context):
+        await update.callback_query.answer("❌ Admin access required.")
+        return
+        
+    try:
+        db = context.bot_data['db']
+        
+        # Get slot details
+        slot = await db.get_admin_ad_slot(slot_number)
+        if not slot:
+            await update.callback_query.answer("❌ Slot not found")
+            return
+        
+        # Get destinations
+        destinations = await db.get_admin_slot_destinations(slot_number)
+        
+        message_text = f"📊 **Analytics for Admin Slot {slot_number}**\n\n"
+        message_text += f"**Status:** {'✅ Active' if slot['is_active'] else '⏸️ Paused'}\n"
+        message_text += f"**Content:** {'Set' if slot['content'] else 'Not Set'}\n"
+        message_text += f"**Destinations:** {len(destinations)} groups\n"
+        message_text += f"**Created:** {slot['created_at']}\n"
+        message_text += f"**Last Updated:** {slot['updated_at']}\n\n"
+        message_text += "**📈 Performance:**\n"
+        message_text += "• Posts Today: 0\n"
+        message_text += "• Posts This Week: 0\n"
+        message_text += "• Posts This Month: 0\n"
+        message_text += "• Total Posts: 0\n\n"
+        message_text += "**🎯 Engagement:**\n"
+        message_text += "• Average Views: 0\n"
+        message_text += "• Average Clicks: 0\n"
+        message_text += "• Conversion Rate: 0%\n"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📈 Detailed Stats", callback_data=f"admin_detailed_analytics:{slot_number}"),
+                InlineKeyboardButton("📊 Export Data", callback_data=f"admin_export_analytics:{slot_number}")
+            ],
+            [
+                InlineKeyboardButton("🔙 Back to Slot", callback_data=f"admin_slot:{slot_number}")
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Error in admin_slot_analytics: {e}")
+        await update.callback_query.answer("❌ Error loading analytics")

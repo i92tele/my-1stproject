@@ -3,7 +3,7 @@ import secrets
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 
 class ReferralSystem:
     """Referral and viral growth system."""

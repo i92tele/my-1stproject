@@ -7,7 +7,7 @@ Core posting logic and coordination
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from ..workers.worker_client import WorkerClient
 from ..workers.rotation import WorkerRotator
 from ..workers.worker_assignment import WorkerAssignmentService
@@ -15,7 +15,11 @@ from ..anti_ban.delays import DelayManager
 from ..anti_ban.content_rotation import ContentRotator
 from ..anti_ban.ban_detection import BanDetector
 from ..monitoring.performance_monitor import PerformanceMonitor
+from restart_recovery import RestartRecovery
+import random
+import sqlite3
 
+import time
 logger = logging.getLogger(__name__)
 
 class PostingService:
@@ -30,19 +34,81 @@ class PostingService:
         self.ban_detector = BanDetector()
         self.performance_monitor = PerformanceMonitor()
         self.assignment_service = WorkerAssignmentService(self.database)
+        self.restart_recovery = RestartRecovery(database_manager)
+        # Track rate-limited destinations with expiry times
+        self.rate_limited_destinations = {}  # {destination_id: expiry_timestamp}
+        # Track invalid destinations
+        self.invalid_destinations = set()  # Set of known invalid destination_ids
+        # Track rate-limited destinations with expiry times
+        self.rate_limited_destinations = {}  # {destination_id: expiry_timestamp}
+        # Track invalid destinations
+        self.invalid_destinations = set()  # Set of known invalid destination_ids
         self.last_global_join = None
         self.global_join_count_today = 0
+        self.recovery_performed = False
+        
+        # Ensure required tables exist
+        asyncio.create_task(self._ensure_tables())
+        
+    async def _ensure_tables(self):
+        """Ensure all required database tables exist."""
+        try:
+            await self.database.ensure_worker_cooldowns_table()
+            logger.info("✅ Database tables ensured")
+        except Exception as e:
+            logger.error(f"❌ Error ensuring tables: {e}")
+    
+    async def perform_restart_recovery(self) -> Dict[str, Any]:
+        """Perform restart recovery if not already done."""
+        if self.recovery_performed:
+            logger.info("🔄 Restart recovery already performed, skipping")
+            return {'status': 'already_performed'}
+        
+        logger.info("🔄 Performing restart recovery...")
+        try:
+            recovery_results = await self.restart_recovery.perform_full_recovery()
+            self.recovery_performed = True
+            
+            # Log recovery summary
+            summary = recovery_results.get('recovery_summary', {})
+            if summary:
+                logger.info(f"✅ Recovery completed with status: {summary.get('overall_status', 'unknown')}")
+                logger.info(f"📊 Components recovered: {len(summary.get('components_recovered', []))}")
+                
+                if summary.get('warnings'):
+                    for warning in summary['warnings']:
+                        logger.warning(f"⚠️ Recovery warning: {warning}")
+                
+                if summary.get('recommendations'):
+                    for rec in summary['recommendations']:
+                        logger.info(f"💡 Recovery recommendation: {rec}")
+            
+            return recovery_results
+            
+        except Exception as e:
+            logger.error(f"❌ Restart recovery failed: {e}")
+            return {'error': str(e)}
+    
+    async def get_recovery_status(self) -> Dict[str, Any]:
+        """Get current recovery status."""
+        return await self.restart_recovery.get_recovery_status()
         
     async def post_ads(self, ad_slots: List[Dict]) -> Dict[str, Any]:
-        """Post ads to their own destinations using assigned or best-available workers.
+        """Post ads to their destinations using ALL available workers simultaneously.
 
         Improvements implemented:
-        - Resolve/assign workers per slot if missing/unavailable or over capacity
-        - Enforce per-worker hourly/daily limits with reassignment
-        - Update last_sent_at once per slot after finishing all destinations
-        - Record worker usage after each attempt
-        - Respect user-specific pause status for destination changes
+        - Parallel posting using all available workers
+        - Each destination gets assigned to the best available worker
+        - Multiple workers post simultaneously for maximum efficiency
+        - Automatic restart recovery on first run
         """
+        # Perform restart recovery on first run
+        if not self.recovery_performed:
+            logger.info("🔄 First posting run detected, performing restart recovery...")
+            recovery_results = await self.perform_restart_recovery()
+            if 'error' in recovery_results:
+                logger.warning(f"⚠️ Restart recovery failed, continuing with posting: {recovery_results['error']}")
+        
         results = {
             'total_ads': len(ad_slots),
             'successful_posts': 0,
@@ -50,82 +116,289 @@ class PostingService:
             'errors': []
         }
         
+        if not ad_slots:
+            logger.info("No ad slots to post")
+            return results
+        
+        # Get all available workers
+        available_workers = await self.database.get_available_workers()
+        if not available_workers:
+            error_msg = "No available workers for posting"
+            logger.error(error_msg)
+            results['errors'].append(error_msg)
+            return results
+        
+        logger.info(f"🚀 Starting parallel posting with {len(available_workers)} workers for {len(ad_slots)} ad slots")
+        
+        # Track which slots have been marked as posted to avoid duplicate updates
+        posted_slots = set()
+        
+        # Create posting tasks for each ad slot
+        posting_tasks = []
+        worker_index = 0
+        
         for ad_slot in ad_slots:
             slot_id = ad_slot.get('id')
-            posted_any = False
             
-            # Check if slot is paused (for destination changes)
+            # Check if slot is paused
             if ad_slot.get('is_paused', False):
                 pause_reason = ad_slot.get('pause_reason', 'unknown')
                 logger.info(f"Slot {slot_id} is paused: {pause_reason}, skipping")
                 continue
             
-            # Resolve a worker for this slot
-            worker = await self._resolve_worker_for_slot(ad_slot)
-            if not worker:
-                msg = f"No available worker for slot {slot_id}"
-                logger.warning(msg)
-                results['errors'].append(msg)
-                continue
-
             # Load destinations for this slot
-            try:
-                slot_type = ad_slot.get('slot_type', 'user')
-                slot_dests = await self.database.get_slot_destinations(slot_id, slot_type)
-            except Exception as e:
-                error_msg = f"Failed to load destinations for slot {slot_id}: {e}"
-                results['errors'].append(error_msg)
-                self.performance_monitor.record_error(error_msg)
-                continue
-
+            slot_type = ad_slot.get('slot_type', 'user')
+            slot_dests = await self.database.get_slot_destinations(slot_id, slot_type)
+            
             if not slot_dests:
                 logger.debug(f"No destinations for slot {slot_id}, skipping")
                 continue
-
-            for destination in slot_dests:
-                # Check capacity before each attempt; reassign if needed
-                under_limit, usage_info = await self._is_worker_under_limit(worker.worker_id)
-                if not under_limit:
-                    # Try to reassign to a different worker
-                    reassigned = await self._reassign_worker_for_slot(ad_slot, exclude_worker_id=worker.worker_id)
-                    if reassigned is None:
-                        warn = f"Worker {worker.worker_id} at capacity; no reassignment available for slot {slot_id}"
-                        logger.warning(warn)
-                        results['errors'].append(warn)
-                        break  # stop processing this slot until next cycle
-                    worker = reassigned
-
-                try:
-                    success = await self._post_single_ad(ad_slot, destination, worker)
-                    posted_any = True
-                    if success:
-                        results['successful_posts'] += 1
+            
+            logger.info(f"📤 Processing slot {slot_id} with {len(slot_dests)} destinations using all available workers")
+            
+            # Distribute destinations across multiple workers for maximum efficiency
+            for i, destination in enumerate(slot_dests):
+                
+                # Find next available worker with proper distribution
+                worker_assigned = False
+                attempts = 0
+                max_attempts = len(available_workers) * 2  # Try twice through all workers
+                
+                while not worker_assigned and attempts < max_attempts:
+                    # Get next worker in round-robin fashion
+                    worker_data = available_workers[worker_index % len(available_workers)]
+                    worker_id = int(worker_data['worker_id'])
+                    worker = self._get_worker_by_id(worker_id)
+                    worker_index += 1
+                    attempts += 1
+                    
+                    if worker:
+                        # Check if this worker is under limit AND not in cooldown
+                        under_limit, usage_info = await self._is_worker_under_limit(worker_id)
+                        cooldown_remaining = await self._check_worker_cooldown(worker_id)
+                        
+                        if under_limit and cooldown_remaining == 0:
+                            # Create posting task for this destination with this worker
+                            task = self._post_single_destination_parallel(ad_slot, destination, worker, results, posted_slots)
+                            posting_tasks.append(task)
+                            logger.info(f"📝 Created task: Worker {worker_id} -> Slot {slot_id} -> {destination.get('destination_name', 'Unknown')}")
+                            worker_assigned = True
+                        else:
+                            if not under_limit:
+                                logger.debug(f"Worker {worker_id} at limit, trying next worker")
+                            if cooldown_remaining > 0:
+                                logger.debug(f"Worker {worker_id} in cooldown for {cooldown_remaining}s, trying next worker")
                     else:
-                        results['failed_posts'] += 1
-                    # Record usage
-                    try:
-                        await self.database.record_worker_post(worker.worker_id, success, None)
-                    except Exception as rec_err:
-                        logger.warning(f"Failed to record worker usage: {rec_err}")
-
-                    # Delay between posts to respect anti-ban
-                    await self.delay_manager.random_delay(30, 120)
-
-                except Exception as e:
-                    error_msg = f"Posting error: {str(e)}"
+                        logger.warning(f"Worker {worker_id} not found, trying next worker")
+                
+                if not worker_assigned:
+                    error_msg = f"No available workers for slot {slot_id} destination {destination.get('destination_id')}"
+                    logger.error(error_msg)
                     results['errors'].append(error_msg)
-                    results['failed_posts'] += 1
-                    self.performance_monitor.record_error(error_msg, f"Ad: {slot_id}, Dest: {destination.get('destination_id')}")
-
-            # Update last_sent_at once per slot after finishing all destinations
-            if posted_any:
-                try:
-                    slot_type = ad_slot.get('slot_type', 'user')
-                    await self.database.update_slot_last_sent(slot_id, slot_type)
-                except Exception as e:
-                    logger.error(f"Failed updating last_sent_at for slot {slot_id}: {e}")
+        
+        # Execute all posting tasks simultaneously
+        if posting_tasks:
+            logger.info(f"🔄 Executing {len(posting_tasks)} posting tasks in parallel using all {len(available_workers)} workers...")
+            try:
+                results_list = await asyncio.gather(*posting_tasks, return_exceptions=True)
+                
+                # Check for exceptions in results
+                for i, result in enumerate(results_list):
+                    if isinstance(result, Exception):
+                        logger.error(f"❌ Task {i} failed with exception: {result}")
+                        results['failed_posts'] += 1
+                        results['errors'].append(f"Task {i} failed: {result}")
+                    elif result is not None:
+                        logger.debug(f"Task {i} completed with result: {result}")
+                
+                logger.info(f"✅ Parallel posting completed: {results['successful_posts']} successful, {results['failed_posts']} failed")
+                
+            except Exception as e:
+                logger.error(f"❌ Error during parallel execution: {e}")
+                results['errors'].append(f"Parallel execution error: {e}")
+        else:
+            logger.warning("⚠️ No posting tasks created")
         
         return results
+    
+    async def _post_single_destination_parallel(self, ad_slot: Dict, destination: Dict, worker, results: Dict[str, Any], posted_slots: set = None):
+        """Post a single ad slot to a single destination using the assigned worker."""
+        slot_id = ad_slot.get('id')
+        slot_type = ad_slot.get('slot_type', 'user')
+        
+        logger.info(f"🚀 Starting task: Worker {worker.worker_id} -> Slot {slot_id} -> {destination.get('destination_name', 'Unknown')}")
+        # Add anti-ban delay
+        await self._add_anti_ban_delay()
+        # Skip rate-limited destinations
+        destination_id = destination.get("destination_id", "")
+        if destination_id in self.rate_limited_destinations:
+            if time.time() < self.rate_limited_destinations[destination_id]:
+                remaining = int(self.rate_limited_destinations[destination_id] - time.time())
+                logger.info(f"⏭️ Skipping rate-limited destination {destination_id} for {remaining}s")
+                results[destination_id] = {"success": False, "error": f"Rate limited for {remaining}s"}
+                return False
+            else:
+                # Expired, remove from tracking
+                del self.rate_limited_destinations[destination_id]
+        # Validate destination first
+        if not await self.validate_destination(destination):
+            destination_id = destination.get("destination_id", "")
+            results[destination_id] = {"success": False, "error": "Invalid destination"}
+            return False
+        # Skip rate-limited destinations
+        destination_id = destination.get("destination_id", "")
+        if destination_id in self.rate_limited_destinations:
+            if time.time() < self.rate_limited_destinations[destination_id]:
+                remaining = int(self.rate_limited_destinations[destination_id] - time.time())
+                logger.info(f"⏭️ Skipping rate-limited destination {destination_id} for {remaining}s")
+                results[destination_id] = {"success": False, "error": f"Rate limited for {remaining}s"}
+                return False
+            else:
+                # Expired, remove from tracking
+                del self.rate_limited_destinations[destination_id]
+        # Validate destination first
+        if not await self.validate_destination(destination):
+            destination_id = destination.get("destination_id", "")
+            results[destination_id] = {"success": False, "error": "Invalid destination"}
+            return False
+        
+        try:
+            # Check worker cooldown before posting
+            cooldown_remaining = await self._check_worker_cooldown(worker.worker_id)
+            if cooldown_remaining > 0:
+                logger.warning(f"⏳ Worker {worker.worker_id} in cooldown for {cooldown_remaining}s, skipping")
+                results['failed_posts'] += 1
+                return
+            
+            # Random delay before posting (2-8 seconds)
+            delay = random.uniform(2, 8)
+            logger.info(f"⏱️ Worker {worker.worker_id} waiting {delay:.1f}s before posting...")
+            await asyncio.sleep(delay)
+            
+            # Post the ad
+            logger.debug(f"📤 Attempting to post: Worker {worker.worker_id} -> Slot {slot_id}")
+            success = await self._post_single_ad(ad_slot, destination, worker)
+            
+            if success:
+                results['successful_posts'] += 1
+                logger.info(f"✅ Worker {worker.worker_id} successfully posted slot {slot_id} to {destination.get('destination_name', 'Unknown')}")
+                
+                # Record usage and set cooldown
+                try:
+                    await self.database.record_worker_post(worker.worker_id, destination.get('destination_id'))
+                    # Set worker cooldown (30-60 seconds after successful post)
+                    cooldown_duration = random.randint(30, 60)
+                    await self._set_worker_cooldown(worker.worker_id, cooldown_duration)
+                    logger.info(f"⏳ Worker {worker.worker_id} cooldown set for {cooldown_duration}s")
+                except Exception as rec_err:
+                    logger.warning(f"Failed to record worker usage: {rec_err}")
+                
+                # Update last_sent_at for the slot (only once per slot, not per destination)
+                if posted_slots is not None and slot_id not in posted_slots:
+                    posted_slots.add(slot_id)
+                    await self._mark_slot_as_posted(slot_id, slot_type)
+                
+            else:
+                results['failed_posts'] += 1
+                logger.warning(f"❌ Worker {worker.worker_id} failed to post slot {slot_id} to {destination.get('destination_name', 'Unknown')}")
+                # Set shorter cooldown for failed posts (10-20 seconds)
+                cooldown_duration = random.randint(10, 20)
+                await self._set_worker_cooldown(worker.worker_id, cooldown_duration)
+                logger.info(f"⏳ Worker {worker.worker_id} cooldown set for {cooldown_duration}s after failure")
+            
+        except Exception as e:
+            error_msg = f"Error posting slot {slot_id} to destination {destination.get('destination_id')}: {e}"
+            logger.error(error_msg)
+            results['errors'].append(error_msg)
+            results['failed_posts'] += 1
+            # Set cooldown for exceptions (15-30 seconds)
+            cooldown_duration = random.randint(15, 30)
+            await self._set_worker_cooldown(worker.worker_id, cooldown_duration)
+            logger.info(f"⏳ Worker {worker.worker_id} cooldown set for {cooldown_duration}s after exception")
+        
+        logger.info(f"🏁 Completed task: Worker {worker.worker_id} -> Slot {slot_id} -> {destination.get('destination_name', 'Unknown')}")
+
+    async def _mark_slot_as_posted(self, slot_id: int, slot_type: str):
+        """Mark a slot as posted (update last_sent_at) - thread-safe version."""
+        try:
+            success = await self.database.update_slot_last_sent(slot_id, slot_type)
+            if success:
+                logger.info(f"✅ Updated last_sent_at for slot {slot_id}")
+            else:
+                logger.error(f"❌ Failed to update last_sent_at for slot {slot_id}")
+        except Exception as e:
+            logger.error(f"Failed updating last_sent_at for slot {slot_id}: {e}")
+
+    async def _post_slot_parallel(self, ad_slot: Dict, worker, results: Dict[str, Any]):
+        """Post a single ad slot to all its destinations using the assigned worker.
+        This method is kept for backward compatibility but the new _post_single_destination_parallel
+        method is preferred for better worker distribution."""
+        slot_id = ad_slot.get('id')
+        posted_any = False
+        
+        try:
+            # Load destinations for this slot
+            slot_type = ad_slot.get('slot_type', 'user')
+            slot_dests = await self.database.get_slot_destinations(slot_id, slot_type)
+            
+            if not slot_dests:
+                logger.debug(f"No destinations for slot {slot_id}, skipping")
+                return
+            
+            logger.info(f"📤 Worker {worker.worker_id} posting slot {slot_id} to {len(slot_dests)} destinations")
+            
+            for destination in slot_dests:
+                try:
+                    # Check if worker is still under limit
+                    under_limit, usage_info = await self._is_worker_under_limit(worker.worker_id)
+                    if not under_limit:
+                        logger.warning(f"Worker {worker.worker_id} at limit, skipping remaining destinations for slot {slot_id}")
+                        break
+                    
+                    # Post the ad
+                    success = await self._post_single_ad(ad_slot, destination, worker)
+                    
+                    if success:
+                        posted_any = True
+                        results['successful_posts'] += 1
+                        logger.info(f"✅ Worker {worker.worker_id} successfully posted slot {slot_id} to {destination.get('destination_name', 'Unknown')}")
+                    else:
+                        results['failed_posts'] += 1
+                        logger.warning(f"❌ Worker {worker.worker_id} failed to post slot {slot_id} to {destination.get('destination_name', 'Unknown')}")
+                    
+                    # Record usage
+                    try:
+                        await self.database.record_worker_post(worker.worker_id, destination.get('destination_id'))
+                    except Exception as rec_err:
+                        logger.warning(f"Failed to record worker usage: {rec_err}")
+                    
+                    # Small delay between posts to avoid spam
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    error_msg = f"Error posting slot {slot_id} to destination {destination.get('destination_id')}: {e}"
+                    logger.error(error_msg)
+                    results['errors'].append(error_msg)
+                    results['failed_posts'] += 1
+            
+            # Update last_sent_at if any posts were made
+            if posted_any:
+                try:
+                    success = await self.database.update_slot_last_sent(slot_id, slot_type)
+                    if success:
+                        logger.info(f"✅ Updated last_sent_at for slot {slot_id}")
+                    else:
+                        logger.error(f"❌ Failed to update last_sent_at for slot {slot_id}")
+                except Exception as e:
+                    logger.error(f"Failed updating last_sent_at for slot {slot_id}: {e}")
+            else:
+                logger.info(f"ℹ️ No posts made for slot {slot_id}, skipping timestamp update")
+                
+        except Exception as e:
+            error_msg = f"Error processing slot {slot_id}: {e}"
+            logger.error(error_msg)
+            results['errors'].append(error_msg)
+            results['failed_posts'] += 1
         
     async def _post_single_ad(self, ad_slot: Dict, destination: Dict, worker: WorkerClient) -> bool:
         """Post a single ad to a single destination."""
@@ -166,13 +439,15 @@ class PostingService:
             # Try to send message with multiple fallback strategies for forum topics
             success = False
             original_destination = destination_id
+            last_error = None
             
             # Strategy 1: Try original format
             try:
-                success = await worker.send_message(destination_id, rotated_message)
+                success = await worker.send_message(destination_id, rotated_message, self.database)
                 if success:
                     logger.info(f"Successfully posted to {destination_id}")
             except Exception as send_error:
+                last_error = send_error
                 error_text = str(send_error).lower()
                 logger.info(f"Strategy 1 failed: {error_text}")
                 
@@ -186,6 +461,7 @@ class PostingService:
                             logger.info(f"Successfully posted to active topic in {destination_id}")
                     except Exception as topic_error:
                         logger.warning(f"Failed to find active topics: {topic_error}")
+                        last_error = topic_error
                         success = False
                 
                 # Strategy 3: Handle special groups like Sector Market that require additional steps
@@ -198,6 +474,7 @@ class PostingService:
                                 logger.info(f"Successfully posted to special group: {destination_id}")
                         except Exception as special_error:
                             logger.warning(f"Failed to post to special group: {special_error}")
+                            last_error = special_error
                             success = False
                 
                 # Strategy 4: If it's a forum topic, try without topic ID
@@ -205,13 +482,14 @@ class PostingService:
                     try:
                         group_only = destination_id.split('/')[0]
                         logger.info(f"Strategy 4: Retrying with group only: {group_only}")
-                        success = await worker.send_message(group_only, rotated_message)
+                        success = await worker.send_message(group_only, rotated_message, self.database)
                         if success:
                             logger.info(f"Successfully posted to group (without topic): {group_only}")
                         else:
                             logger.warning(f"Strategy 4 failed: {group_only}")
                     except Exception as fallback_error:
                         logger.warning(f"Strategy 4 also failed: {fallback_error}")
+                        last_error = fallback_error
                         success = False
                 
                 # Strategy 5: Try with t.me/ prefix for forum topics
@@ -220,13 +498,14 @@ class PostingService:
                         # Convert @username/topic to t.me/username/topic
                         t_me_format = destination_id.replace("@", "t.me/")
                         logger.info(f"Strategy 5: Trying t.me format: {t_me_format}")
-                        success = await worker.send_message(t_me_format, rotated_message)
+                        success = await worker.send_message(t_me_format, rotated_message, self.database)
                         if success:
                             logger.info(f"Successfully posted using t.me format: {t_me_format}")
                         else:
                             logger.warning(f"Strategy 5 failed: {t_me_format}")
                     except Exception as t_me_error:
                         logger.warning(f"Strategy 5 also failed: {t_me_error}")
+                        last_error = t_me_error
                         success = False
                 
                 # Strategy 6: Try with https:// prefix
@@ -235,13 +514,14 @@ class PostingService:
                         # Convert @username/topic to https://t.me/username/topic
                         https_format = f"https://{destination_id.replace('@', 't.me/')}"
                         logger.info(f"Strategy 6: Trying https format: {https_format}")
-                        success = await worker.send_message(https_format, rotated_message)
+                        success = await worker.send_message(https_format, rotated_message, self.database)
                         if success:
                             logger.info(f"Successfully posted using https format: {https_format}")
                         else:
                             logger.warning(f"Strategy 6 failed: {https_format}")
                     except Exception as https_error:
                         logger.warning(f"Strategy 6 also failed: {https_error}")
+                        last_error = https_error
                         success = False
                 
                 # If all strategies failed, re-raise the original error for other error handling
@@ -260,7 +540,13 @@ class PostingService:
                     except Exception as flag_err:
                         logger.error(f"Failed to flag problematic destination: {flag_err}")
                     
-                    raise send_error
+                    raise last_error
+            
+            # Record posting attempt in history
+            await self._record_posting_attempt(ad_slot, destination, worker, success, str(last_error) if not success and last_error else None)
+            
+            # Update destination health
+            await self._update_destination_health(destination_id, destination.get('destination_name', destination_id), success, str(last_error) if not success and last_error else None)
             
             if success:
                 # Record successful post metadata (optional analytics)
@@ -274,6 +560,17 @@ class PostingService:
                 return False
                 
         except Exception as e:
+            # Record failed posting attempt
+            await self._record_posting_attempt(ad_slot, destination, worker, False, str(e))
+            
+            # Update destination health for failure
+            await self._update_destination_health(
+                destination.get('destination_id'), 
+                destination.get('destination_name', destination.get('destination_id')), 
+                False, 
+                str(e)
+            )
+            
             # Known permission/captcha errors: flag destination and warn admin
             error_text = str(e)
             lower_err = error_text.lower()
@@ -319,6 +616,85 @@ class PostingService:
             
         except Exception as e:
             logger.error(f"Failed to record post: {e}")
+
+    async def _record_posting_attempt(self, ad_slot: Dict, destination: Dict, worker: WorkerClient, success: bool, error_message: str = None):
+        """Record a posting attempt in the posting history."""
+        try:
+            import hashlib
+            
+            # Get slot type (user or admin)
+            slot_type = ad_slot.get('slot_type', 'user')
+            
+            # Create content hash for duplicate detection
+            message_content = ad_slot.get('content', '')
+            content_hash = hashlib.md5(message_content.encode('utf-8')).hexdigest()
+            
+            # Detect ban type if failed
+            ban_detected = False
+            ban_type = None
+            if not success and error_message:
+                error_lower = error_message.lower()
+                if any(key in error_lower for key in ["can't write in this chat", "forbidden", "writeforbidden", "banned"]):
+                    ban_detected = True
+                    ban_type = "permission_denied"
+                elif "topic_closed" in error_lower:
+                    ban_detected = True
+                    ban_type = "topic_closed"
+                elif "rate limit" in error_lower or "wait" in error_lower:
+                    ban_detected = True
+                    ban_type = "rate_limit"
+            
+            # Record in posting history
+            await self.database.record_posting_attempt(
+                worker_id=worker.worker_id,
+                group_id=destination.get('destination_id'),
+                success=success,
+                error=error_message
+            )
+            
+            # If ban detected, record worker ban
+            if ban_detected and ban_type:
+                await self._record_worker_ban(worker, destination.get('destination_id'), ban_type, error_message)
+                
+        except Exception as e:
+            logger.error(f"Failed to record posting attempt: {e}")
+
+    async def _update_destination_health(self, destination_id: str, destination_name: str, success: bool, error_message: str = None):
+        """Update destination health statistics."""
+        try:
+            await self.database.update_destination_health(
+                destination_id=destination_id,
+                success=success
+            )
+        except Exception as e:
+            logger.error(f"Failed to update destination health: {e}")
+
+    async def _record_worker_ban(self, worker: WorkerClient, destination_id: str, ban_type: str, ban_reason: str):
+        """Record a worker ban for a specific destination."""
+        try:
+            # Estimate unban time based on ban type
+            estimated_unban_time = None
+            if ban_type == "rate_limit":
+                # Rate limits usually last 1-24 hours
+                from datetime import datetime, timedelta
+                estimated_unban_time = (datetime.now() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
+            elif ban_type == "topic_closed":
+                # Topic closed might be temporary
+                from datetime import datetime, timedelta
+                estimated_unban_time = (datetime.now() + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            await self.database.record_worker_ban(
+                worker_id=worker.worker_id,
+                destination_id=destination_id,
+                ban_type=ban_type,
+                ban_reason=ban_reason,
+                estimated_unban_time=estimated_unban_time
+            )
+            
+            logger.warning(f"Recorded worker ban: worker={worker.worker_id}, dest={destination_id}, type={ban_type}")
+            
+        except Exception as e:
+            logger.error(f"Failed to record worker ban: {e}")
             
     def _get_worker_by_id(self, worker_id: int) -> Optional[WorkerClient]:
         """Get worker by ID."""
@@ -453,12 +829,9 @@ class PostingService:
             
             # Record failed join in database
             await self.database.record_failed_group_join(
-                group_id=destination_id,
-                group_name=group_name,
-                group_username=destination_id,
-                fail_reason=join_result['reason'],
                 worker_id=worker.worker_id,
-                priority=priority
+                group_id=destination_id,
+                error=join_result['reason']
             )
             
             logger.warning(f"Failed join logged: Worker {worker.worker_id} -> {destination_id} ({join_result['reason']})")
@@ -478,7 +851,7 @@ class PostingService:
                 self.global_join_count_today = 0
         
         # Check daily limit (10 joins per day across all workers)
-        if self.global_join_count_today >= 10:
+        if self.global_join_count_today >= 50:  # Increased from 10 to 50 (5 per worker)
             return False
         
         # Check hourly limit (2 joins per hour across all workers)
@@ -509,9 +882,19 @@ class PostingService:
             
             logger.info(f"Attempting to find active topics in {group_name}")
             
-            # Try to get the group entity
+            # First, ensure worker is a member of the main group
             try:
                 group_entity = await worker.get_entity(group_name)
+                
+                # Try to join the group if not already a member
+                try:
+                    from telethon.tl.functions.channels import JoinChannelRequest
+                    await worker.client(JoinChannelRequest(group_entity))
+                    logger.info(f"Worker {worker.worker_id}: Successfully joined {group_name}")
+                except Exception as join_error:
+                    if "already a participant" not in str(join_error).lower():
+                        logger.warning(f"Worker {worker.worker_id}: Failed to join {group_name}: {join_error}")
+                
             except Exception as e:
                 logger.warning(f"Could not get group entity for {group_name}: {e}")
                 return False
@@ -523,7 +906,7 @@ class PostingService:
                 
                 if hasattr(group_entity, 'id'):
                     input_peer = InputPeerChannel(group_entity.id, group_entity.access_hash)
-                    topics_result = await worker(GetForumTopicsRequest(
+                    topics_result = await worker.client(GetForumTopicsRequest(
                         channel=input_peer,
                         offset_date=None,
                         offset_id=0,
@@ -539,7 +922,7 @@ class PostingService:
                                 try:
                                     topic_destination = f"{group_name}/{topic.id}"
                                     logger.info(f"Found specific topic, trying to post: {topic_destination}")
-                                    success = await worker.send_message(topic_destination, message)
+                                    success = await worker.send_message(topic_destination, message, self.database)
                                     if success:
                                         logger.info(f"Successfully posted to specific topic: {topic_destination}")
                                         return True
@@ -558,7 +941,7 @@ class PostingService:
                             try:
                                 topic_destination = f"{group_name}/{topic.id}"
                                 logger.info(f"Trying to post to alternative topic: {topic_destination}")
-                                success = await worker.send_message(topic_destination, message)
+                                success = await worker.send_message(topic_destination, message, self.database)
                                 if success:
                                     logger.info(f"Successfully posted to alternative topic: {topic_destination}")
                                     return True
@@ -571,6 +954,15 @@ class PostingService:
                     
             except Exception as forum_error:
                 logger.warning(f"Could not get forum topics for {group_name}: {forum_error}")
+                # Try posting to main group as fallback
+                try:
+                    logger.info(f"Trying to post to main group as fallback: {group_name}")
+                    success = await worker.send_message(group_name, message, self.database)
+                    if success:
+                        logger.info(f"Successfully posted to main group: {group_name}")
+                        return True
+                except Exception as fallback_error:
+                    logger.warning(f"Fallback posting to main group also failed: {fallback_error}")
                 return False
                 
         except Exception as e:
@@ -595,7 +987,7 @@ class PostingService:
                     await asyncio.sleep(2)
                     
                     # Try posting again
-                    success = await worker.send_message(destination_id, message)
+                    success = await worker.send_message(destination_id, message, self.database)
                     if success:
                         logger.info(f"Successfully posted to Sector Market: {destination_id}")
                         return True
@@ -610,9 +1002,96 @@ class PostingService:
             # For other special groups, try standard approach
             else:
                 logger.info(f"Trying standard posting for special group: {destination_id}")
-                success = await worker.send_message(destination_id, message)
+                success = await worker.send_message(destination_id, message, self.database)
                 return success
                 
         except Exception as e:
             logger.error(f"Error in special group posting: {e}")
             return False
+
+    async def _check_worker_cooldown(self, worker_id: int) -> int:
+        """Check if worker is in cooldown period."""
+        try:
+            conn = sqlite3.connect(self.database.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT cooldown_until FROM worker_cooldowns 
+                WHERE worker_id = ? AND cooldown_until > datetime('now')
+            """, (worker_id,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                cooldown_until = datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
+                remaining = int((cooldown_until - datetime.now()).total_seconds())
+                return max(0, remaining)
+            
+            return 0
+            
+        except Exception as e:
+            logger.error(f"Error checking worker cooldown: {e}")
+            return 0
+
+    async def _set_worker_cooldown(self, worker_id: int, duration_seconds: int):
+        """Set worker cooldown period."""
+        try:
+            conn = sqlite3.connect(self.database.db_path)
+            cursor = conn.cursor()
+            
+            cooldown_until = (datetime.now() + timedelta(seconds=duration_seconds)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO worker_cooldowns (worker_id, cooldown_until, created_at)
+                VALUES (?, ?, datetime('now'))
+            """, (worker_id, cooldown_until))
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error setting worker cooldown: {e}")
+            
+    
+    async def _add_anti_ban_delay(self):
+        """Add random delay between posts for anti-ban protection."""
+        import random
+        delay = random.uniform(2, 8)  # 2-8 seconds
+        logger.debug(f"🛡️ Anti-ban delay: {delay:.1f}s")
+        await asyncio.sleep(delay)
+
+    async def validate_destination(self, destination: Dict) -> bool:
+        """Check if a destination is valid before attempting to post."""
+        destination_id = destination.get("destination_id", "")
+        destination_name = destination.get("name", "")
+        
+        # Skip known invalid destinations
+        if hasattr(self, "invalid_destinations") and destination_id in self.invalid_destinations:
+            logger.info(f"⏭️ Skipping known invalid destination: {destination_name} ({destination_id})")
+            return False
+            
+        # Skip rate-limited destinations
+        if hasattr(self, "rate_limited_destinations") and destination_id in self.rate_limited_destinations:
+            if time.time() < self.rate_limited_destinations[destination_id]:
+                remaining = int(self.rate_limited_destinations[destination_id] - time.time())
+                logger.info(f"⏭️ Skipping rate-limited destination {destination_name} for {remaining}s")
+                return False
+        
+        # Check format validity (basic checks)
+        if "/" in destination_id and not destination_id.split("/")[0]:
+            logger.warning(f"❌ Invalid destination format: {destination_name} ({destination_id})")
+            if hasattr(self, "invalid_destinations"):
+                self.invalid_destinations.add(destination_id)
+            return False
+        
+        # Check for known invalid patterns
+        invalid_patterns = ["@c/", "@social/", "@mafiamarketss/"]
+        for pattern in invalid_patterns:
+            if pattern.lower() in destination_id.lower() or pattern.lower() in destination_name.lower():
+                logger.warning(f"❌ Invalid destination pattern {pattern}: {destination_name} ({destination_id})")
+                if hasattr(self, "invalid_destinations"):
+                    self.invalid_destinations.add(destination_id)
+                return False
+        
+        return True

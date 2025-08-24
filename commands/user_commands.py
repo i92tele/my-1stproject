@@ -98,6 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 InlineKeyboardButton("🎁 Referral", callback_data="cmd:referral")
             ],
             [
+                InlineKeyboardButton("💡 Suggestions", callback_data="cmd:suggestions"),
                 InlineKeyboardButton("❓ Help", callback_data="cmd:help")
             ]
         ]
@@ -149,11 +150,106 @@ async def handle_command_callback(update: Update, context: ContextTypes.DEFAULT_
             await help_command_callback(update, context)
         elif command == "start":
             await start_callback(update, context)
+        elif command == "suggestions":
+            # Import suggestions to handle suggestions menu
+            try:
+                from commands import suggestion_commands
+                await suggestion_commands.show_suggestions_menu(update, context)
+            except ImportError:
+                logger.warning("Suggestions commands not available")
+                await query.edit_message_text("❌ Suggestions feature not available")
         elif command == "admin_menu":
             # Import admin commands to handle admin menu
             try:
                 from commands import admin_commands
                 await admin_commands.admin_menu(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+
+        elif command == "system_status":
+            # Import admin commands to handle system status
+            try:
+                from commands import admin_commands
+                await admin_commands.system_status(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "admin_stats":
+            try:
+                from commands import admin_commands
+                await admin_commands.admin_stats(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "system_check":
+            try:
+                from commands import admin_commands
+                await admin_commands.system_check(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "posting_status":
+            try:
+                from commands import admin_commands
+                await admin_commands.posting_service_status(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "worker_status":
+            try:
+                from commands import admin_commands
+                await admin_commands.worker_status(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "revenue_stats":
+            try:
+                from commands import admin_commands
+                await admin_commands.revenue_stats(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "list_users":
+            try:
+                from commands import admin_commands
+                await admin_commands.list_users(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "list_groups":
+            try:
+                from commands import admin_commands
+                await admin_commands.list_groups(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "admin_slots":
+            try:
+                from commands import admin_slot_commands
+                await admin_slot_commands.admin_slots(update, context)
+            except ImportError:
+                logger.warning("Admin slot commands not available")
+                await query.edit_message_text("❌ Admin slot features not available")
+        elif command == "failed_groups":
+            try:
+                from commands import admin_commands
+                await admin_commands.failed_groups(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "paused_slots":
+            try:
+                from commands import admin_commands
+                await admin_commands.paused_slots(update, context)
+            except ImportError:
+                logger.warning("Admin commands not available")
+                await query.edit_message_text("❌ Admin features not available")
+        elif command == "admin_ads_analysis":
+            try:
+                from commands import admin_commands
+                # Feature not implemented yet, route to admin stats for now
+                await admin_commands.admin_stats(update, context)
             except ImportError:
                 logger.warning("Admin commands not available")
                 await query.edit_message_text("❌ Admin features not available")
@@ -431,14 +527,24 @@ async def show_crypto_selection(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     
     try:
-        # Define supported cryptocurrencies directly (no price fetching)
-        cryptos = {
+        # Get available cryptocurrencies from config
+        config = context.bot_data['config']
+        
+        # Define supported cryptocurrencies (limited set)
+        all_cryptos = {
+            'TON': {'symbol': 'TON', 'name': 'Toncoin'},
             'BTC': {'symbol': 'BTC', 'name': 'Bitcoin'},
             'ETH': {'symbol': 'ETH', 'name': 'Ethereum'},
-            'USDT': {'symbol': 'USDT', 'name': 'Tether USD'},
-            'USDC': {'symbol': 'USDC', 'name': 'USD Coin'},
-            'TON': {'symbol': 'TON', 'name': 'Toncoin'}
+            'SOL': {'symbol': 'SOL', 'name': 'Solana'},
+            'LTC': {'symbol': 'LTC', 'name': 'Litecoin'}
         }
+        
+        # Only show cryptos that have addresses configured
+        cryptos = {}
+        for crypto_type, crypto_data in all_cryptos.items():
+            address = config.get_crypto_address(crypto_type)
+            if address:  # Only include if address is configured
+                cryptos[crypto_type] = crypto_data
         
         # Create crypto selection keyboard (without prices)
         keyboard = []
@@ -633,13 +739,184 @@ async def handle_crypto_selection(update: Update, context: ContextTypes.DEFAULT_
             )
         elif crypto_type == 'BTC':
             pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_id = str(payment_request.get('payment_id', 'N/A'))
+            
+            # Check if this is a unique address
+            unique_address = payment_request.get('unique_address', False)
+            attribution_method = payment_request.get('attribution_method', 'amount_only')
+            
+            if attribution_method == 'unique_address':
+                text = (
+                    f"₿ Bitcoin Payment\n"
+                    f"Plan: {tier.title()}\n"
+                    f"Amount: {amount_crypto:.8f} BTC (${amount_usd})\n\n"
+                    f"📍 Send to: {pay_to_address}\n"
+                    f"🔗 **This is your unique payment address**\n\n"
+                    f"🆔 Payment ID: {payment_id}\n"
+                    f"✅ **Unique Address Attribution** - No memo needed!\n"
+                    f"Your payment will be automatically detected and attributed.\n\n"
+                    f"📱 Use your Bitcoin wallet app to scan the QR code above or copy the address manually."
+                )
+            else:
+                text = (
+                    f"₿ Bitcoin Payment\n"
+                    f"Plan: {tier.title()}\n"
+                    f"Amount: {amount_crypto:.8f} BTC (${amount_usd})\n\n"
+                    f"📍 Send to: {pay_to_address}\n\n"
+                    f"🆔 Payment ID: {payment_id}\n"
+                    f"💡 No memo required - payment will be detected automatically\n\n"
+                    f"📱 Use your Bitcoin wallet app to scan the QR code above or copy the address manually."
+                )
+        elif crypto_type == 'ETH':
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_id = str(payment_request.get('payment_id', 'N/A'))
+            attribution_method = payment_request.get('attribution_method', 'amount_only')
+            payment_data = payment_request.get('payment_data', '')
+            
+            if attribution_method == 'transaction_data':
+                text = (
+                    f"Ξ Ethereum Payment\n"
+                    f"Plan: {tier.title()}\n"
+                    f"Amount: {amount_crypto:.6f} ETH (${amount_usd})\n\n"
+                    f"📍 Send to: {pay_to_address}\n"
+                    f"📊 **Include this data:** `{payment_data}`\n\n"
+                    f"🆔 Payment ID: {payment_id}\n"
+                    f"✅ **Transaction Data Attribution** - Include the data field!\n"
+                    f"Your payment will be automatically detected and attributed.\n\n"
+                    f"📱 Use your Ethereum wallet app to scan the QR code above or copy the address manually.\n"
+                    f"💡 **Important:** Make sure to include the data field in your transaction!"
+                )
+            else:
+                text = (
+                    f"Ξ Ethereum Payment\n"
+                    f"Plan: {tier.title()}\n"
+                    f"Amount: {amount_crypto:.6f} ETH (${amount_usd})\n\n"
+                    f"📍 Send to: {pay_to_address}\n\n"
+                    f"🆔 Payment ID: {payment_id}\n"
+                    f"💡 No memo required - payment will be detected automatically\n\n"
+                    f"📱 Use your Ethereum wallet app to scan the QR code above or copy the address manually."
+                )
+        elif crypto_type == 'USDT':
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_id = str(payment_request.get('payment_id', 'N/A'))
             
             text = (
-                f"₿ Bitcoin Payment\n"
+                f"💵 USDT Payment\n"
                 f"Plan: {tier.title()}\n"
-                f"Amount: {amount_crypto:.8f} BTC (${amount_usd})\n\n"
+                f"Amount: {amount_crypto:.2f} USDT (${amount_usd})\n\n"
                 f"📍 Send to: {pay_to_address}\n\n"
-                f"📱 Use your Bitcoin wallet app to scan the QR code above or copy the address manually."
+                f"🆔 Payment ID: {payment_id}\n"
+                f"💡 No memo required - payment will be detected automatically\n\n"
+                f"📱 Use your USDT wallet app to scan the QR code above or copy the address manually."
+            )
+        elif crypto_type == 'USDC':
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_id = str(payment_request.get('payment_id', 'N/A'))
+            
+            text = (
+                f"💵 USDC Payment\n"
+                f"Plan: {tier.title()}\n"
+                f"Amount: {amount_crypto:.2f} USDC (${amount_usd})\n\n"
+                f"📍 Send to: {pay_to_address}\n\n"
+                f"🆔 Payment ID: {payment_id}\n"
+                f"💡 No memo required - payment will be detected automatically\n\n"
+                f"📱 Use your USDC wallet app to scan the QR code above or copy the address manually."
+            )
+        elif crypto_type == 'SOL':
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_id = str(payment_request.get('payment_id', 'N/A'))
+            attribution_method = payment_request.get('attribution_method', 'amount_only')
+            memo_instruction = payment_request.get('payment_memo', f'Payment-{payment_id}')
+            
+            if attribution_method == 'memo_instruction':
+                text = (
+                    f"⚡ Solana Payment\n"
+                    f"Plan: {tier.title()}\n"
+                    f"Amount: {amount_crypto:.6f} SOL (${amount_usd})\n\n"
+                    f"📍 Send to: {pay_to_address}\n"
+                    f"📝 **Include memo:** `{memo_instruction}`\n\n"
+                    f"🆔 Payment ID: {payment_id}\n"
+                    f"✅ **Memo Attribution** - Include the memo instruction!\n"
+                    f"Your payment will be automatically detected and attributed.\n\n"
+                    f"📱 Use your Solana wallet app to scan the QR code above or copy the address manually.\n"
+                    f"💡 **Important:** Make sure to include the memo in your transaction!"
+                )
+            else:
+                text = (
+                    f"⚡ Solana Payment\n"
+                    f"Plan: {tier.title()}\n"
+                    f"Amount: {amount_crypto:.6f} SOL (${amount_usd})\n\n"
+                    f"📍 Send to: {pay_to_address}\n\n"
+                    f"🆔 Payment ID: {payment_id}\n"
+                    f"💡 No memo required - payment will be detected automatically\n\n"
+                    f"📱 Use your Solana wallet app to scan the QR code above or copy the address manually."
+                )
+        elif crypto_type == 'LTC':
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_id = str(payment_request.get('payment_id', 'N/A'))
+            attribution_method = payment_request.get('attribution_method', 'amount_only')
+            
+            if attribution_method == 'unique_address':
+                text = (
+                    f"🪙 Litecoin Payment\n"
+                    f"Plan: {tier.title()}\n"
+                    f"Amount: {amount_crypto:.6f} LTC (${amount_usd})\n\n"
+                    f"📍 Send to: {pay_to_address}\n"
+                    f"🔗 **This is your unique payment address**\n\n"
+                    f"🆔 Payment ID: {payment_id}\n"
+                    f"✅ **Unique Address Attribution** - No memo needed!\n"
+                    f"Your payment will be automatically detected and attributed.\n\n"
+                    f"📱 Use your Litecoin wallet app to scan the QR code above or copy the address manually."
+                )
+            else:
+                text = (
+                    f"🪙 Litecoin Payment\n"
+                    f"Plan: {tier.title()}\n"
+                    f"Amount: {amount_crypto:.6f} LTC (${amount_usd})\n\n"
+                    f"📍 Send to: {pay_to_address}\n\n"
+                    f"🆔 Payment ID: {payment_id}\n"
+                    f"💡 No memo required - payment will be detected automatically\n\n"
+                    f"📱 Use your Litecoin wallet app to scan the QR code above or copy the address manually."
+                )
+        elif crypto_type == 'ADA':
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_id = str(payment_request.get('payment_id', 'N/A'))
+            
+            text = (
+                f"🔹 Cardano Payment\n"
+                f"Plan: {tier.title()}\n"
+                f"Amount: {amount_crypto:.6f} ADA (${amount_usd})\n\n"
+                f"📍 Send to: {pay_to_address}\n\n"
+                f"🆔 Payment ID: {payment_id}\n"
+                f"💡 No memo required - payment will be detected automatically\n\n"
+                f"📱 Use your Cardano wallet app to scan the QR code above or copy the address manually."
+            )
+        elif crypto_type == 'TRX':
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_id = str(payment_request.get('payment_id', 'N/A'))
+            
+            text = (
+                f"🔺 TRON Payment\n"
+                f"Plan: {tier.title()}\n"
+                f"Amount: {amount_crypto:.6f} TRX (${amount_usd})\n\n"
+                f"📍 Send to: {pay_to_address}\n\n"
+                f"🆔 Payment ID: {payment_id}\n"
+                f"💡 No memo required - payment will be detected automatically\n\n"
+                f"📱 Use your TRON wallet app to scan the QR code above or copy the address manually."
+            )
+        else:
+            # Generic fallback for any other cryptocurrencies (no memo required by default)
+            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
+            payment_id = str(payment_request.get('payment_id', 'N/A'))
+            
+            text = (
+                f"💳 {crypto_type} Payment\n"
+                f"Plan: {tier.title()}\n"
+                f"Amount: {amount_crypto:.6f} {crypto_type} (${amount_usd})\n\n"
+                f"📍 Send to: {pay_to_address}\n\n"
+                f"🆔 Payment ID: {payment_id}\n"
+                f"💡 No memo required - payment will be detected automatically\n\n"
+                f"📱 Use your {crypto_type} wallet app to scan the QR code above or copy the address manually."
             )
         
         # Debug: Log the text length and content for troubleshooting
@@ -870,7 +1147,7 @@ async def cancel_payment_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text(f"❌ Error cancelling payment: {str(e)}")
 
 async def copy_address_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto_type: str):
-    """Show copyable address for manual payment."""
+    """Show copyable address for manual payment in a clear format."""
     import os
     query = update.callback_query
     
@@ -884,15 +1161,48 @@ async def copy_address_callback(update: Update, context: ContextTypes.DEFAULT_TY
         elif crypto_type == 'BTC':
             address = getattr(config, 'btc_address', '') or os.getenv('BTC_ADDRESS', '')
             network_name = "Bitcoin Network"
+        elif crypto_type == 'ETH':
+            address = getattr(config, 'eth_address', '') or os.getenv('ETH_ADDRESS', '')
+            network_name = "Ethereum Network"
+        elif crypto_type == 'USDT':
+            address = getattr(config, 'usdt_address', '') or os.getenv('USDT_ADDRESS', '')
+            network_name = "USDT Network"
+        elif crypto_type == 'USDC':
+            address = getattr(config, 'usdc_address', '') or os.getenv('USDC_ADDRESS', '')
+            network_name = "USDC Network"
+        elif crypto_type == 'SOL':
+            address = getattr(config, 'sol_address', '') or os.getenv('SOL_ADDRESS', '')
+            network_name = "Solana Network"
+        elif crypto_type == 'LTC':
+            address = getattr(config, 'ltc_address', '') or os.getenv('LTC_ADDRESS', '')
+            network_name = "Litecoin Network"
+        elif crypto_type == 'ADA':
+            address = getattr(config, 'ada_address', '') or os.getenv('ADA_ADDRESS', '')
+            network_name = "Cardano Network"
+        elif crypto_type == 'TRX':
+            address = getattr(config, 'trx_address', '') or os.getenv('TRX_ADDRESS', '')
+            network_name = "TRON Network"
         else:
             address = "Address not configured"
             network_name = crypto_type
         
         if address:
-            await query.answer(
-                f"📋 {crypto_type} Address:\n{address}\n\nTap and hold to copy!",
-                show_alert=True
+            # Show address in a new message for easy copying
+            copy_message = (
+                f"📋 **{crypto_type} Payment Address**\n\n"
+                f"**Network:** {network_name}\n\n"
+                f"**Address:**\n"
+                f"`{address}`\n\n"
+                f"💡 **To copy:** Tap the address above and select 'Copy'\n"
+                f"🔙 Use the Back button to return to payment"
             )
+            
+            # Create a back button to return to the payment
+            keyboard = [[InlineKeyboardButton("🔙 Back to Payment", callback_data="cmd:subscribe")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(copy_message, parse_mode='Markdown', reply_markup=reply_markup)
+            await query.answer("Address displayed above for easy copying!", show_alert=False)
         else:
             await query.answer(
                 f"❌ {crypto_type} address not configured",
@@ -1131,7 +1441,7 @@ async def my_ads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_obj = update.message if update.message else update.callback_query.message
             await reply_obj.reply_text(
                 "❌ You need an active subscription to manage ads.\n\n"
-                "Please contact the admin to get a subscription."
+                "Use /subscribe to get started!"
             )
             return
 
@@ -1419,7 +1729,7 @@ async def set_content_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Provide a clear confirmation with navigation
     keyboard = [
-        [InlineKeyboardButton("⬅️ Back to This Slot", callback_data=f"slot:{slot_id}")],
+        [InlineKeyboardButton("⬅️ Back to This Slot", callback_data=f"manage_slot:{slot_id}")],
         [InlineKeyboardButton("🔙 Back to My Ads", callback_data="cmd:my_ads")]
     ]
     if success:
@@ -1490,7 +1800,7 @@ async def set_schedule_receive(update: Update, context: ContextTypes.DEFAULT_TYP
                 time_str = f"{minutes} minute{'s' if minutes != 1 else ''}"
 
         keyboard = [
-            [InlineKeyboardButton("⬅️ Back to This Slot", callback_data=f"slot:{slot_id}")],
+            [InlineKeyboardButton("⬅️ Back to This Slot", callback_data=f"manage_slot:{slot_id}")],
             [InlineKeyboardButton("🔙 Back to My Ads", callback_data="cmd:my_ads")]
         ]
 
@@ -1679,15 +1989,54 @@ async def analytics_command_callback(update: Update, context: ContextTypes.DEFAU
                 expires_dt = expires_value
             days_remaining = max(0, (expires_dt - datetime.now()).days)
         
-        # Create analytics message
+        # Get posting statistics from ad_posts table
+        slot_ids = [slot.get('id') for slot in slots if slot.get('id')]
+        total_posts = 0
+        successful_posts = 0
+        failed_posts = 0
+        
+        if slot_ids:
+            # Query ad_posts table for this user's slots
+            import sqlite3
+            try:
+                conn = sqlite3.connect(db.db_path)
+                cursor = conn.cursor()
+                
+                # Get total posts for user's slots
+                cursor.execute(f'''
+                    SELECT COUNT(*), SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 
+                           SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END)
+                    FROM ad_posts 
+                    WHERE slot_id IN ({','.join(['?']*len(slot_ids))})
+                ''', slot_ids)
+                
+                result = cursor.fetchone()
+                if result:
+                    total_posts = result[0] or 0
+                    successful_posts = result[1] or 0
+                    failed_posts = result[2] or 0
+                
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error getting posting stats: {e}")
+        
+        # Calculate success rate
+        success_rate = 0
+        if total_posts > 0:
+            success_rate = round((successful_posts / total_posts) * 100, 1)
+        
+        # Create enhanced analytics message
         message = f"""📊 **Your Analytics**
 
 🎯 **Ad Slots:** {total_slots} total, {active_slots} active
 📍 **Destinations:** {total_destinations} total
+📨 **Messages Sent:** {total_posts} total
+✅ **Successful:** {successful_posts} ({success_rate}%)
+❌ **Failed:** {failed_posts}
 ⏰ **Subscription:** {subscription.get('tier', 'Unknown').title()}
 📅 **Days Remaining:** {days_remaining}
 
-*More detailed analytics coming soon!*"""
+💡 *Tip: Check individual slot analytics for detailed performance!*"""
         
         # Add back button
         keyboard = [[InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="cmd:start")]]
@@ -1855,6 +2204,7 @@ async def start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🎁 Referral Program", callback_data="cmd:referral")],
         [InlineKeyboardButton("💎 Subscribe", callback_data="cmd:subscribe")],
         [InlineKeyboardButton("📋 My Ads", callback_data="cmd:my_ads")],
+        [InlineKeyboardButton("💡 Suggestions", callback_data="cmd:suggestions")],
         [InlineKeyboardButton("❓ Help", callback_data="cmd:help")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)

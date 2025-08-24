@@ -253,7 +253,7 @@ class HealthChecker:
         try:
             # Try to import and initialize database
             from config import BotConfig
-            from database import DatabaseManager
+            from src.database.manager import DatabaseManager
             
             config = BotConfig.load_from_env()
             db = DatabaseManager(config.database_url or "bot_database.db", logger)
@@ -415,7 +415,7 @@ class HealthChecker:
         
         try:
             from config import BotConfig
-            from database import DatabaseManager
+            from src.database.manager import DatabaseManager
             
             config = BotConfig.load_from_env()
             db = DatabaseManager(config.database_url or "bot_database.db", logger)

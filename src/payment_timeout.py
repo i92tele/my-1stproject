@@ -1,3 +1,5 @@
+from src.payment_address_direct_fix import fix_payment_data, get_payment_message
+from src.payment_address_fix import fix_payment_data, get_crypto_address
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -73,7 +75,8 @@ class PaymentTimeoutHandler:
     async def check_payment_status(self, payment_id: str) -> Dict[str, any]:
         """Check payment status with timeout handling."""
         try:
-            payment = await self._get_payment(payment_id)
+            payment_raw = await self._get_payment(payment_id)
+            payment = fix_payment_data(payment_raw)
             if not payment:
                 return {'status': 'not_found', 'message': 'Payment not found'}
             
@@ -150,7 +153,8 @@ class PaymentTimeoutHandler:
     async def _send_payment_reminder(self, payment_id: str, minutes_remaining: float):
         """Send payment reminder to user."""
         try:
-            payment = await self._get_payment(payment_id)
+            payment_raw = await self._get_payment(payment_id)
+            payment = fix_payment_data(payment_raw)
             if not payment:
                 return
             
@@ -177,7 +181,8 @@ class PaymentTimeoutHandler:
             await self._update_payment_status(payment_id, PaymentStatus.EXPIRED.value)
             
             # Get payment details for notification
-            payment = await self._get_payment(payment_id)
+            payment_raw = await self._get_payment(payment_id)
+            payment = fix_payment_data(payment_raw)
             if payment:
                 user_id = payment['user_id']
                 message = (

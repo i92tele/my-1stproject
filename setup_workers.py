@@ -31,7 +31,7 @@ class WorkerSetup:
         """Load worker credentials from environment variables"""
         worker_count = 0
         
-        for i in range(1, 6):  # Check workers 1-5
+        for i in range(1, 11):  # Check workers 1-10
             api_id = os.getenv(f'WORKER_{i}_API_ID')
             api_hash = os.getenv(f'WORKER_{i}_API_HASH')
             phone = os.getenv(f'WORKER_{i}_PHONE')

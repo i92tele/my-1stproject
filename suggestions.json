@@ -1,0 +1,48 @@
+{
+  "suggestions": [
+    {
+      "id": 1,
+      "user_id": 7172873873,
+      "username": "Istratip2p",
+      "chat_id": 7172873873,
+      "suggestion": "something to write here",
+      "timestamp": "2025-08-16T08:15:45.915289",
+      "status": "pending"
+    },
+    {
+      "id": 2,
+      "user_id": 7172873873,
+      "username": "Istratip2p",
+      "chat_id": 7172873873,
+      "suggestion": "something nrerere",
+      "timestamp": "2025-08-19T17:44:54.760997",
+      "status": "pending"
+    }
+  ],
+  "user_suggestions": {
+    "7172873873": [
+      {
+        "id": 1,
+        "user_id": 7172873873,
+        "username": "Istratip2p",
+        "chat_id": 7172873873,
+        "suggestion": "something to write here",
+        "timestamp": "2025-08-16T08:15:45.915289",
+        "status": "pending"
+      },
+      {
+        "id": 2,
+        "user_id": 7172873873,
+        "username": "Istratip2p",
+        "chat_id": 7172873873,
+        "suggestion": "something nrerere",
+        "timestamp": "2025-08-19T17:44:54.760997",
+        "status": "pending"
+      }
+    ]
+  },
+  "metadata": {
+    "total_suggestions": 2,
+    "last_updated": "2025-08-19T17:44:54.760997"
+  }
+}

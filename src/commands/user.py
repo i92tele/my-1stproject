@@ -1,10 +1,10 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import ContextTypes, ConversationHandler
 from datetime import datetime
-from ..decorators import rate_limit
-from ..core_systems import safe_rate_limit, safe_error_handling
-from ..ui_manager import get_ui_manager
-from ..payment_processor import get_payment_processor
+from src.decorators import rate_limit
+from src.core_systems import safe_rate_limit, safe_error_handling
+from src.ui_manager import get_ui_manager
+from src.services.payment_processor import get_payment_processor
 
 @safe_error_handling
 @safe_rate_limit("start_command")

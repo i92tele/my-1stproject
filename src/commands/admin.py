@@ -1,6 +1,6 @@
 from telegram import Update, constants
 from telegram.ext import ContextTypes
-from ..decorators import admin_only
+from src.decorators import admin_only
 from datetime import datetime
 
 @admin_only

@@ -101,7 +101,7 @@ class BotDiagnostic:
         try:
             # Try to import and test database connection
             sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            from database import DatabaseManager
+            from src.database.manager import DatabaseManager
             from config import BotConfig
             
             config = BotConfig.load_from_env()
