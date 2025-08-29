@@ -80,6 +80,9 @@ class CallbackHandler:
         elif data.startswith("check_payment:"):
             payment_id = data.replace("check_payment:", "")
             await self._check_payment_status(update, context, payment_id)
+        elif data.startswith("verify_cancelled:"):
+            payment_id = data.replace("verify_cancelled:", "")
+            await self._verify_cancelled_payment(update, context, payment_id)
         else:
             await self._send_fallback_message(update, context, f"Unknown payment callback: {data}")
     
@@ -88,18 +91,17 @@ class CallbackHandler:
         user_id = update.effective_user.id
         
         # Get payment processor
-        payment_processor = context.bot_data.get('payment_processor')
+        payment_processor = context.bot_data.get('payments')
         if not payment_processor:
             await self._send_fallback_message(update, context, "Payment system not available")
             return
         
         try:
             # Create payment request
-            amount_usd = 15 if tier == 'basic' else (45 if tier == 'pro' else 75)
             payment_request = await payment_processor.create_payment_request(
                 user_id=user_id,
                 tier=tier,
-                amount_usd=amount_usd
+                crypto_type='TON'
             )
             
             if payment_request.get('success') is False:
@@ -110,7 +112,7 @@ class CallbackHandler:
             keyboard = [
                 [
                     InlineKeyboardButton(
-                        f"💳 Pay {payment_request['amount_ton']} TON", 
+                        f"💳 Pay {payment_request['amount_crypto']} TON", 
                         url=payment_request['payment_url']
                     )
                 ],
@@ -128,7 +130,7 @@ class CallbackHandler:
             
             text = (
                 f"💳 **TON Payment for {tier.title()} Plan**\n\n"
-                f"**Amount:** {payment_request['amount_ton']} TON (${payment_request['amount_usd']})\n"
+                f"**Amount:** {payment_request['amount_crypto']} TON (${payment_request['amount_usd']})\n"
                 f"**Payment ID:** `{payment_request['payment_id']}`\n"
                 f"**Expires:** {payment_request['expires_at']}\n\n"
                 f"**Instructions:**\n"
@@ -146,7 +148,7 @@ class CallbackHandler:
     async def _check_payment_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE, payment_id: str):
         """Check payment status and process if completed."""
         # Get payment processor
-        payment_processor = context.bot_data.get('payment_processor')
+        payment_processor = context.bot_data.get('payments')
         if not payment_processor:
             await self._send_fallback_message(update, context, "Payment system not available")
             return
@@ -156,10 +158,27 @@ class CallbackHandler:
             status = await payment_processor.get_payment_status(payment_id)
             
             if not status['success']:
-                await self._send_fallback_message(update, context, f"Error checking payment: {status.get('error')}")
+                # FIX: Better error handling for payment not found
+                if status.get('status') == 'not_found':
+                    keyboard = [
+                        [InlineKeyboardButton("💳 Create New Payment", callback_data="pay:basic")],
+                        [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+                    ]
+                    text = (
+                        "❌ **Payment Not Found**\n\n"
+                        f"Payment ID: `{payment_id}` was not found.\n"
+                        "This could happen if:\n"
+                        "• The payment was already processed\n"
+                        "• The payment ID is incorrect\n"
+                        "• The payment expired\n\n"
+                        "Please create a new payment request."
+                    )
+                    await self._edit_message(update, context, text, keyboard)
+                else:
+                    await self._send_fallback_message(update, context, f"Error checking payment: {status.get('error')}")
                 return
             
-            payment = status['payment']
+            payment = status
             
             if payment['status'] == 'completed':
                 # Payment already completed
@@ -174,53 +193,55 @@ class CallbackHandler:
                     "You can now use your ad slots."
                 )
             elif payment['status'] == 'pending':
-                # Check if payment has been received
-                verification = await payment_processor.verify_payment(payment_id)
+                # FIX: Don't call verify_payment_on_blockchain again - let the payment monitor handle it
+                # Just show the current status and let the user wait
+                keyboard = [
+                    [InlineKeyboardButton("🔄 Check Again", callback_data=f"check_payment:{payment_id}")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+                ]
+                text = (
+                    "⏳ **Payment Pending**\n\n"
+                    f"Payment ID: `{payment_id}`\n"
+                    f"Amount: {payment.get('amount_crypto', 'N/A')} {payment.get('crypto_type', 'TON')}\n"
+                    f"Status: {payment['status']}\n\n"
+                    "The payment monitor is checking for your payment automatically.\n"
+                    "Please wait a moment and check again."
+                )
+            elif payment['status'] == 'cancelled':
+                # FIX: Check if payment is actually verified on blockchain before showing cancelled
+                verification = await payment_processor.verify_payment_on_blockchain(payment_id)
                 
-                if verification.get('payment_verified'):
-                    # Process the payment
-                    result = await payment_processor.process_successful_payment(payment_id)
-                    
-                    if result['success']:
-                        keyboard = [
-                            [InlineKeyboardButton("📊 My Status", callback_data="menu_status")],
-                            [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
-                        ]
-                        text = (
-                            "🎉 **Payment Verified!**\n\n"
-                            f"✅ Subscription activated: **{result['tier'].title()}**\n"
-                            f"📊 Ad slots: {result['slots']}\n"
-                            f"Payment ID: `{payment_id}`\n\n"
-                            "You can now create and manage your ad slots."
-                        )
-                    else:
-                        keyboard = [
-                            [InlineKeyboardButton("🔄 Check Again", callback_data=f"check_payment:{payment_id}")],
-                            [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
-                        ]
-                        text = (
-                            "❌ **Payment Processing Failed**\n\n"
-                            f"Payment was received but activation failed.\n"
-                            f"Error: {result.get('error', 'Unknown error')}\n\n"
-                            "Please contact support."
-                        )
-                else:
-                    # Payment not yet received
+                if verification:
+                    # Payment was actually verified, show success
                     keyboard = [
-                        [InlineKeyboardButton("🔄 Check Again", callback_data=f"check_payment:{payment_id}")],
-                        [InlineKeyboardButton("💳 Pay Again", callback_data=f"pay:{payment.get('tier', 'basic')}")],
+                        [InlineKeyboardButton("📊 My Status", callback_data="menu_status")],
                         [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
                     ]
                     text = (
-                        "⏳ **Payment Pending**\n\n"
+                        "🎉 **Payment Verified!**\n\n"
+                        f"✅ The payment was found on the blockchain!\n"
+                        f"✅ Subscription has been activated\n"
+                        f"Payment ID: `{payment_id}`\n\n"
+                        "You can now use your ad slots."
+                    )
+                else:
+                    # Payment truly cancelled
+                    keyboard = [
+                        [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"verify_cancelled:{payment_id}")],
+                        [InlineKeyboardButton("💳 Create New Payment", callback_data="pay:basic")],
+                        [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+                    ]
+                    text = (
+                        "🚫 **Payment Cancelled**\n\n"
                         f"Payment ID: `{payment_id}`\n"
-                        f"Amount: {payment['amount']} {payment['currency']}\n"
+                        f"Amount: {payment.get('amount_crypto', 'N/A')} {payment.get('crypto_type', 'TON')}\n"
                         f"Status: {payment['status']}\n\n"
-                        "Please complete the TON transfer and check again."
+                        "This payment was marked as cancelled, but if you actually made the payment, click 'Verify Payment' to check the blockchain.\n\n"
+                        "If the payment was not made, create a new payment request."
                     )
             elif payment['status'] == 'expired':
                 keyboard = [
-                    [InlineKeyboardButton("💳 Create New Payment", callback_data=f"pay:{payment.get('tier', 'basic')}")],
+                    [InlineKeyboardButton("💳 Create New Payment", callback_data="pay:basic")],
                     [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
                 ]
                 text = (
@@ -229,15 +250,16 @@ class CallbackHandler:
                     f"Status: {payment['status']}\n\n"
                     "Please create a new payment request."
                 )
+
             else:
                 keyboard = [
-                    [InlineKeyboardButton("💳 Create New Payment", callback_data=f"pay:{payment.get('tier', 'basic')}")],
+                    [InlineKeyboardButton("💳 Create New Payment", callback_data="pay:basic")],
                     [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
                 ]
                 text = (
                     f"❓ **Payment Status: {payment['status']}**\n\n"
                     f"Payment ID: `{payment_id}`\n"
-                    f"Amount: {payment['amount']} {payment['currency']}\n\n"
+                    f"Amount: {payment.get('amount_crypto', 'N/A')} {payment.get('crypto_type', 'TON')}\n\n"
                     "Please contact support for assistance."
                 )
             
@@ -246,6 +268,71 @@ class CallbackHandler:
         except Exception as e:
             await self._send_fallback_message(update, context, f"Error checking payment: {str(e)}")
     
+    async def _verify_cancelled_payment(self, update: Update, context: ContextTypes.DEFAULT_TYPE, payment_id: str):
+        """Verify a cancelled payment on the blockchain and reactivate if found."""
+        # Get payment processor
+        payment_processor = context.bot_data.get('payments')
+        if not payment_processor:
+            await self._send_fallback_message(update, context, "Payment system not available")
+            return
+        
+        try:
+            # Show verification in progress message
+            keyboard = [
+                [InlineKeyboardButton("⏳ Verifying...", callback_data="verifying")]
+            ]
+            text = (
+                "🔍 **Verifying Cancelled Payment**\n\n"
+                f"Payment ID: `{payment_id}`\n"
+                "Checking blockchain for payment...\n\n"
+                "Please wait..."
+            )
+            await self._edit_message(update, context, text, keyboard)
+            
+            # Get payment data
+            status = await payment_processor.get_payment_status(payment_id)
+            if not status['success']:
+                await self._send_fallback_message(update, context, f"Payment not found: {status.get('error')}")
+                return
+            
+            payment = status
+            
+            # Verify payment on blockchain
+            verification = await payment_processor.verify_payment_on_blockchain(payment_id)
+            
+            if verification:
+                # Payment was found on blockchain, reactivate
+                keyboard = [
+                    [InlineKeyboardButton("📊 My Status", callback_data="menu_status")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+                ]
+                text = (
+                    "🎉 **Payment Verified!**\n\n"
+                    f"✅ The cancelled payment was found on the blockchain!\n"
+                    f"✅ Subscription has been reactivated\n"
+                    f"Payment ID: `{payment_id}`\n\n"
+                    "You can now use your ad slots."
+                )
+            else:
+                # Payment not found on blockchain
+                keyboard = [
+                    [InlineKeyboardButton("💳 Create New Payment", callback_data="pay:basic")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
+                ]
+                text = (
+                    "❌ **Payment Not Found**\n\n"
+                    f"Payment ID: `{payment_id}`\n"
+                    f"Amount: {payment.get('amount_crypto', 'N/A')} {payment.get('crypto_type', 'TON')}\n\n"
+                    "The payment was not found on the blockchain.\n"
+                    "This means the payment was not actually made or was sent to the wrong address.\n\n"
+                    "Please create a new payment request."
+                )
+            
+            await self._edit_message(update, context, text, keyboard)
+            
+        except Exception as e:
+            await self._send_fallback_message(update, context, f"Error verifying cancelled payment: {str(e)}")
+    
     async def _process_subscription(self, update: Update, context: ContextTypes.DEFAULT_TYPE, plan: str):
         """Process subscription selection."""
         user_id = update.effective_user.id
@@ -253,8 +340,8 @@ class CallbackHandler:
         # Plan configurations
         plan_configs = {
             "basic": {"price": 15, "slots": 1, "duration": 30},
-            "pro": {"price": 30, "slots": 3, "duration": 30},
-            "enterprise": {"price": 50, "slots": 5, "duration": 30}
+            "pro": {"price": 45, "slots": 3, "duration": 30},
+            "enterprise": {"price": 75, "slots": 5, "duration": 30}
         }
         
         config = plan_configs.get(plan)
@@ -263,18 +350,19 @@ class CallbackHandler:
             return
         
         # Create payment
-        payment_handler = context.bot_data.get('payment_timeout_handler')
-        if payment_handler:
-            payment_data = await payment_handler.create_payment_with_timeout(
+        payment_processor = context.bot_data.get('payments')
+        if payment_processor:
+            payment_data = await payment_processor.create_payment_request(
                 user_id=user_id,
-                amount=config["price"],
-                currency="USD",
-                timeout_minutes=30
+                tier=plan,
+                crypto_type='TON'
             )
             
             # Show payment instructions
             keyboard = [
-                [InlineKeyboardButton("💳 Pay Now", callback_data=f"pay_{payment_data['payment_id']}")],
+                [InlineKeyboardButton(f"💳 Pay {payment_data['amount_crypto']} TON", url=payment_data['payment_url'])],
+                [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"check_payment:{payment_data['payment_id']}")],
+                [InlineKeyboardButton("📊 My Status", callback_data="menu_status")],
                 [InlineKeyboardButton("🔙 Back", callback_data="menu_subscribe")]
             ]
             
@@ -285,8 +373,13 @@ class CallbackHandler:
                 f"• 10 destinations per slot\n"
                 f"• {config['duration']} days duration\n\n"
                 f"**Payment ID:** `{payment_data['payment_id']}`\n"
-                f"**Amount:** ${config['price']}\n\n"
-                f"Click 'Pay Now' to proceed with payment."
+                f"**Amount:** {payment_data['amount_crypto']} TON (${payment_data['amount_usd']})\n"
+                f"**Expires:** {payment_data['expires_at']}\n\n"
+                f"**Instructions:**\n"
+                f"1. Click the payment button below\n"
+                f"2. Complete the TON transfer\n"
+                f"3. Click 'Check Payment Status' to verify\n\n"
+                f"⏰ **Payment expires in 30 minutes**"
             )
             
             await self._edit_message(update, context, text, keyboard)

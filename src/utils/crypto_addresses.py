@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Fallback Cryptocurrency Addresses
+Cryptocurrency Addresses
 
-This module provides fallback cryptocurrency addresses when environment variables are not available.
+This module provides cryptocurrency addresses from environment variables.
+IMPORTANT: All addresses must be set in environment variables (.env file).
 """
 
 import os
@@ -10,22 +11,28 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Fallback addresses - replace with your actual addresses
-FALLBACK_ADDRESSES = {
-    'BTC': '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',  # First Bitcoin address ever (Satoshi)
-    'ETH': '0x0000000000000000000000000000000000000000',  # Zero address
-    'USDT': '0x0000000000000000000000000000000000000000',  # Zero address
-    'USDC': '0x0000000000000000000000000000000000000000',  # Zero address
-    'LTC': 'LTC_address_placeholder',
-    'SOL': 'SOL_address_placeholder',
-    'TON': 'TON_address_placeholder'
-}
-
 def get_address(crypto_type):
-    """Get cryptocurrency address with fallback."""
+    """Get cryptocurrency address from environment variables."""
     crypto_type = crypto_type.upper()
     
-    # Try environment variables first
+    # Special handling for tokens that use different addresses
+    if crypto_type == 'USDT':
+        # USDT is an ERC-20 token that uses the same address as ETH
+        eth_address = os.environ.get('ETH_ADDRESS')
+        if eth_address:
+            return eth_address
+        else:
+            logger.error(f"No ETH_ADDRESS found for {crypto_type}. Please set ETH_ADDRESS in your .env file.")
+            return f"Contact support for {crypto_type} address"
+    elif crypto_type == 'USDC':
+        # USDC can be on Solana, so use SOL address
+        sol_address = os.environ.get('SOL_ADDRESS')
+        if sol_address:
+            return sol_address
+        else:
+            logger.error(f"No SOL_ADDRESS found for {crypto_type}. Please set SOL_ADDRESS in your .env file.")
+            return f"Contact support for {crypto_type} address"
+    
     env_vars = [
         f"{crypto_type}_ADDRESS",
         f"{crypto_type}_WALLET",
@@ -33,22 +40,13 @@ def get_address(crypto_type):
         f"{crypto_type}_ADDR"
     ]
     
-    # Special case for TON
     if crypto_type == 'TON':
         env_vars.append('TON_MERCHANT_WALLET')
     
-    # Check each environment variable
     for var in env_vars:
         address = os.environ.get(var)
         if address:
             return address
     
-    # Use fallback address
-    fallback = FALLBACK_ADDRESSES.get(crypto_type)
-    if fallback:
-        logger.warning(f"Using fallback address for {crypto_type}")
-        return fallback
-    
-    # No address found
-    logger.error(f"No address found for {crypto_type}")
-    return "Contact support for address"
+    logger.error(f"No address found for {crypto_type}. Please set {crypto_type}_ADDRESS in your .env file.")
+    return f"Contact support for {crypto_type} address"

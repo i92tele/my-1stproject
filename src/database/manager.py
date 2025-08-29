@@ -27,8 +27,8 @@ class DatabaseManager:
             self._lock = asyncio.Lock()
         return self._lock
 
-    async def initialize(self) -> None:
-        """Initialize database with required tables.
+    def initialize_sync(self) -> None:
+        """Initialize database with required tables (synchronous version).
         
         Creates all necessary tables if they don't exist:
         - users: User information and subscriptions
@@ -42,185 +42,217 @@ class DatabaseManager:
         Raises:
             Exception: If database initialization fails
         """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Create users table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    subscription_tier TEXT,
+                    subscription_expires TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Create ad_slots table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ad_slots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    slot_number INTEGER,
+                    content TEXT,
+                    file_id TEXT,
+                    is_active BOOLEAN DEFAULT 0,
+                    interval_minutes INTEGER DEFAULT 60,
+                    last_sent_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
+
+            # Create slot_destinations table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS slot_destinations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id INTEGER,
+                    destination_type TEXT,
+                    destination_id TEXT,
+                    destination_name TEXT,
+                    alias TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (slot_id) REFERENCES ad_slots(id)
+                )
+            ''')
+
+            # Create payments table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    payment_id TEXT UNIQUE,
+                    user_id INTEGER,
+                    amount_usd REAL,
+                    crypto_type TEXT,
+                    payment_provider TEXT,
+                    pay_to_address TEXT,
+                    expected_amount_crypto REAL,
+                    payment_url TEXT,
+                    expires_at TIMESTAMP,
+                    attribution_method TEXT DEFAULT 'amount_only',
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_checked TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
+
+            # Create message_stats table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS message_stats (
+                    user_id INTEGER,
+                    date DATE,
+                    message_count INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, date),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
+
+            # Create worker_cooldowns table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS worker_cooldowns (
+                    worker_id INTEGER PRIMARY KEY,
+                    last_used_at TIMESTAMP,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Create worker_activity_log table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS worker_activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    worker_id INTEGER,
+                    chat_id INTEGER,
+                    success BOOLEAN,
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (worker_id) REFERENCES worker_cooldowns(worker_id)
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS worker_bans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    worker_id INTEGER,
+                    chat_id INTEGER,
+                    banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (worker_id) REFERENCES worker_cooldowns(worker_id)
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS managed_groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id TEXT UNIQUE,
+                    group_name TEXT,
+                    category TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Add missing columns to existing tables if they don't exist
+            missing_columns = [
+                ('payments', 'last_checked', 'TEXT'),
+                ('payments', 'manual_verification', 'INTEGER DEFAULT 0'),
+                ('payments', 'verified_by_admin', 'INTEGER'),
+                ('payments', 'transaction_hash', 'TEXT'),
+                ('ad_slots', 'updated_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'),
+                ('ad_slots', 'category', 'TEXT'),
+                ('slot_destinations', 'updated_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'),
+                ('users', 'updated_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+            ]
+            
+            for table, column, definition in missing_columns:
+                try:
+                    cursor.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+                    self.logger.info(f"Added {column} column to {table} table")
+                except Exception as e:
+                    # Column might already exist, which is fine
+                    pass
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ad_posts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id INTEGER,
+                    destination_id TEXT,
+                    destination_name TEXT,
+                    worker_id INTEGER,
+                    success BOOLEAN,
+                    error TEXT,
+                    posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (slot_id) REFERENCES ad_slots(id),
+                    FOREIGN KEY (worker_id) REFERENCES worker_cooldowns(worker_id)
+                )
+            ''')
+
+            # Create admin_ad_slots table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_ad_slots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_number INTEGER UNIQUE,
+                    content TEXT,
+                    file_id TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    is_paused BOOLEAN DEFAULT 0,
+                    interval_minutes INTEGER DEFAULT 60,
+                    last_sent_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Create admin_slot_destinations table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_slot_destinations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id INTEGER,
+                    destination_type TEXT DEFAULT 'group',
+                    destination_id TEXT,
+                    destination_name TEXT,
+                    alias TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT
+                )
+            ''')
+            conn.commit()
+            conn.close()
+            self.logger.info("Database initialized successfully")
+
+        except Exception as e:
+            self.logger.error(f"Database initialization error: {e}")
+            raise
+
+    async def initialize(self) -> None:
+        """Initialize database with required tables (async version).
+        
+        Creates all necessary tables if they don't exist.
+        This is the same as initialize_sync() but with async lock handling.
+        
+        Raises:
+            Exception: If database initialization fails
+        """
         async with self._get_lock():
-            try:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-
-                # Create users table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id INTEGER PRIMARY KEY,
-                        username TEXT,
-                        first_name TEXT,
-                        last_name TEXT,
-                        subscription_tier TEXT,
-                        subscription_expires TIMESTAMP,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-
-                # Create ad_slots table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS ad_slots (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER,
-                        slot_number INTEGER,
-                        content TEXT,
-                        file_id TEXT,
-                        is_active BOOLEAN DEFAULT 0,
-                        interval_minutes INTEGER DEFAULT 60,
-                        last_sent_at TIMESTAMP,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (user_id) REFERENCES users(user_id)
-                    )
-                ''')
-
-                # Create slot_destinations table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS slot_destinations (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        slot_id INTEGER,
-                        destination_type TEXT,
-                        destination_id TEXT,
-                        destination_name TEXT,
-                        alias TEXT,
-                        is_active BOOLEAN DEFAULT 1,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (slot_id) REFERENCES ad_slots(id)
-                    )
-                ''')
-
-                # Create payments table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS payments (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        payment_id TEXT UNIQUE,
-                        user_id INTEGER,
-                        amount_usd REAL,
-                        crypto_type TEXT,
-                        payment_provider TEXT,
-                        pay_to_address TEXT,
-                        expected_amount_crypto REAL,
-                        payment_url TEXT,
-                        expires_at TIMESTAMP,
-                        attribution_method TEXT DEFAULT 'amount_only',
-                        status TEXT DEFAULT 'pending',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (user_id) REFERENCES users(user_id)
-                    )
-                ''')
-
-                # Create message_stats table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS message_stats (
-                        user_id INTEGER,
-                        date DATE,
-                        message_count INTEGER DEFAULT 0,
-                        PRIMARY KEY (user_id, date),
-                        FOREIGN KEY (user_id) REFERENCES users(user_id)
-                    )
-                ''')
-
-                # Create worker_cooldowns table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS worker_cooldowns (
-                        worker_id INTEGER PRIMARY KEY,
-                        last_used_at TIMESTAMP,
-                        is_active BOOLEAN DEFAULT 1,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-
-                # Create worker_activity_log table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS worker_activity_log (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        worker_id INTEGER,
-                        chat_id INTEGER,
-                        success BOOLEAN,
-                        error TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (worker_id) REFERENCES worker_cooldowns(worker_id)
-                    )
-                ''')
-
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS worker_bans (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        worker_id INTEGER,
-                        chat_id INTEGER,
-                        banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (worker_id) REFERENCES worker_cooldowns(worker_id)
-                    )
-                ''')
-
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS managed_groups (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        group_id TEXT UNIQUE,
-                        group_name TEXT,
-                        category TEXT,
-                        is_active BOOLEAN DEFAULT 1,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS ad_posts (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        slot_id INTEGER,
-                        destination_id TEXT,
-                        destination_name TEXT,
-                        worker_id INTEGER,
-                        success BOOLEAN,
-                        error TEXT,
-                        posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (slot_id) REFERENCES ad_slots(id),
-                        FOREIGN KEY (worker_id) REFERENCES worker_cooldowns(worker_id)
-                    )
-                ''')
-
-                # Create admin_ad_slots table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS admin_ad_slots (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        slot_number INTEGER UNIQUE,
-                        content TEXT,
-                        file_id TEXT,
-                        is_active BOOLEAN DEFAULT 1,
-                        is_paused BOOLEAN DEFAULT 0,
-                        interval_minutes INTEGER DEFAULT 60,
-                        last_sent_at TIMESTAMP,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-
-                # Create admin_slot_destinations table
-                cursor.execute('''
-                            CREATE TABLE IF NOT EXISTS admin_slot_destinations (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                slot_id INTEGER,
-                                destination_type TEXT DEFAULT 'group',
-                                destination_id TEXT,
-                                destination_name TEXT,
-                                alias TEXT,
-                                is_active BOOLEAN DEFAULT 1,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                updated_at TEXT
-                            )
-                        ''')
-                conn.commit()
-                conn.close()
-                self.logger.info("Database initialized successfully")
-
-            except Exception as e:
-                self.logger.error(f"Database initialization error: {e}")
-                raise
+            self.initialize_sync()
 
     async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user information by user ID.
@@ -275,40 +307,75 @@ class DatabaseManager:
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT OR REPLACE INTO users (user_id, username, first_name, last_name, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (user_id, username, first_name, last_name, datetime.now()))
+                
+                # Check if user already exists
+                cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+                existing_user = cursor.fetchone()
+                
+                if existing_user:
+                    # User exists - UPDATE only basic info, preserve subscription data
+                    cursor.execute('''
+                        UPDATE users 
+                        SET username = ?, first_name = ?, last_name = ?, updated_at = ?
+                        WHERE user_id = ?
+                    ''', (username, first_name, last_name, datetime.now(), user_id))
+                    self.logger.info(f"User {user_id} updated successfully (preserved subscription)")
+                else:
+                    # User doesn't exist - INSERT new user
+                    cursor.execute('''
+                        INSERT INTO users (user_id, username, first_name, last_name, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (user_id, username, first_name, last_name, datetime.now(), datetime.now()))
+                    self.logger.info(f"User {user_id} created successfully")
+                
                 conn.commit()
                 conn.close()
-                self.logger.info(f"User {user_id} created/updated successfully")
                 return True
             except Exception as e:
                 self.logger.error(f"Error creating/updating user {user_id}: {e}")
                 return False
 
-    async def get_user_subscription(self, user_id: int) -> Optional[Dict[str, Any]]:
+    async def get_user_subscription(self, user_id: int, use_lock: bool = True) -> Optional[Dict[str, Any]]:
         """Get user's subscription information."""
-        async with self._get_lock():
+        if use_lock:
+            async with self._get_lock():
+                return await self._get_user_subscription_internal(user_id)
+        else:
+            return await self._get_user_subscription_internal(user_id)
+    
+    async def _get_user_subscription_internal(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Internal method to get user subscription without lock."""
+        try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute('''
-                SELECT subscription_tier, subscription_expires 
-                FROM users 
-                WHERE user_id = ? AND subscription_expires > ?
-            ''', (user_id, datetime.now()))
+            
+            # First check if user exists and has subscription data
+            cursor.execute("SELECT subscription_tier, subscription_expires FROM users WHERE user_id = ?", (user_id,))
             row = cursor.fetchone()
             conn.close()
             
-            if row:
+            if not row or not row['subscription_tier'] or not row['subscription_expires']:
+                return None
+            
+            # Check if subscription is still active
+            expires_at = datetime.fromisoformat(row['subscription_expires'])
+            if expires_at > datetime.now():
                 return {
                     'tier': row['subscription_tier'],
                     'expires': row['subscription_expires'],
                     'is_active': True
                 }
+            else:
+                return {
+                    'tier': row['subscription_tier'],
+                    'expires': row['subscription_expires'],
+                    'is_active': False
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Error getting user subscription for {user_id}: {e}")
             return None
-
     async def update_subscription(self, user_id: int, tier: str, duration_days: int) -> bool:
         """Update user's subscription."""
         async with self._get_lock():
@@ -599,21 +666,68 @@ class DatabaseManager:
                 return False
 
     async def update_payment_status(self, payment_id: str, status: str) -> bool:
-        """Update payment status."""
+        """Update payment status and last checked time."""
         async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
                 cursor.execute('''
                     UPDATE payments 
-                    SET status = ?, updated_at = ?
+                    SET status = ?, updated_at = ?, last_checked = ?
                     WHERE payment_id = ?
-                ''', (status, datetime.now(), payment_id))
+                ''', (status, datetime.now(), datetime.now(), payment_id))
                 conn.commit()
                 conn.close()
                 return True
             except Exception as e:
                 self.logger.error(f"Error updating payment status: {e}")
+                return False
+                
+    async def update_payment_field(self, payment_id: str, field_name: str, field_value: Any) -> bool:
+        """Update a specific field in a payment record."""
+        async with self._get_lock():
+            try:
+                # Validate field name to prevent SQL injection
+                allowed_fields = [
+                    'status', 'amount_usd', 'amount_crypto', 'crypto_type', 
+                    'payment_provider', 'transaction_hash', 'manual_verification',
+                    'verification_attempts', 'last_verification_at', 'verified_by_admin'
+                ]
+                
+                if field_name not in allowed_fields:
+                    self.logger.error(f"Invalid payment field name: {field_name}")
+                    return False
+                
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Use parameterized query with dynamic field name
+                query = f"UPDATE payments SET {field_name} = ?, updated_at = ? WHERE payment_id = ?"
+                cursor.execute(query, (field_value, datetime.now(), payment_id))
+                
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                self.logger.error(f"Error updating payment field {field_name}: {e}")
+                return False
+
+    async def update_payment_last_checked(self, payment_id: str) -> bool:
+        """Update the last_checked time for a payment (used by background monitoring)."""
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE payments 
+                    SET last_checked = ?
+                    WHERE payment_id = ?
+                ''', (datetime.now(), payment_id))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                self.logger.error(f"Error updating payment last_checked: {e}")
                 return False
 
     async def get_payment(self, payment_id: str) -> Optional[Dict[str, Any]]:
@@ -947,37 +1061,340 @@ class DatabaseManager:
                 return False
 
     async def activate_subscription(self, user_id: int, tier: str, duration_days: int = 30) -> bool:
-        """Activate or extend user subscription."""
+        """Activate or extend user subscription with comprehensive error handling and transaction safety."""
         async with self._get_lock():
+            conn = None
             try:
-                # Get current subscription
-                current_sub = await self.get_user_subscription(user_id)
+                # FIX: Add input validation
+                if not user_id or not tier or duration_days <= 0:
+                    self.logger.error(f"❌ Invalid subscription parameters: user_id={user_id}, tier={tier}, duration={duration_days}")
+                    return False
                 
-                # Calculate new expiry date
-                if current_sub and current_sub['is_active']:
+                # CRITICAL FIX: Remove create_user call to prevent deadlock
+                # The user already exists from the payment verification process
+                # This was causing a deadlock when called from payment verification
+                
+                # FIX: Get current subscription with timeout
+                try:
+                    current_sub = await asyncio.wait_for(self.get_user_subscription(user_id, use_lock=False), timeout=10.0)
+                except asyncio.TimeoutError:
+                    self.logger.error(f"❌ Timeout getting subscription for user {user_id}")
+                    return False
+                
+                # FIX: Calculate new expiry date with proper error handling
+                try:
+                    if current_sub and current_sub.get('is_active'):
+                        # Extend existing subscription
+                        current_expiry = datetime.fromisoformat(current_sub['expires'])
+                        new_expiry = current_expiry + timedelta(days=duration_days)
+                    else:
+                        # Start new subscription
+                        new_expiry = datetime.now() + timedelta(days=duration_days)
+                except (ValueError, TypeError) as e:
+                    self.logger.error(f"❌ Error calculating expiry date for user {user_id}: {e}")
+                    return False
+                
+                # FIX: Use proper database connection with timeout and error handling
+                try:
+                    conn = sqlite3.connect(self.db_path, timeout=30.0)
+                    cursor = conn.cursor()
+                    
+                    # FIX: Use transaction for atomicity
+                    cursor.execute('BEGIN TRANSACTION')
+                    
+                    # FIX: Check if user exists, create if not
+                    cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+                    if not cursor.fetchone():
+                        self.logger.info(f"📝 User {user_id} not found, creating user first...")
+                        cursor.execute('''
+                            INSERT INTO users (user_id, username, first_name, last_name, subscription_tier, subscription_expires, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (user_id, f"user_{user_id}", "User", None, tier, new_expiry.isoformat(), datetime.now().isoformat(), datetime.now().isoformat()))
+                        self.logger.info(f"✅ User {user_id} created with subscription")
+                    else:
+                        # User exists, update subscription
+                        cursor.execute('''
+                            UPDATE users 
+                            SET subscription_tier = ?, subscription_expires = ?, updated_at = ?
+                            WHERE user_id = ?
+                        ''', (tier, new_expiry.isoformat(), datetime.now().isoformat(), user_id))
+                    
+                    # FIX: Verify the operation was successful
+                    if cursor.rowcount == 0:
+                        self.logger.error(f"❌ No rows updated for user {user_id}")
+                        cursor.execute('ROLLBACK')
+                        return False
+                    
+                    # FIX: Commit transaction
+                    cursor.execute('COMMIT')
+                    
+                    self.logger.info(f"✅ Activated {tier} subscription for user {user_id} until {new_expiry}")
+                    
+                    # Automatically create ad slots for the new subscription
+                    try:
+                        ad_slots = await self._get_or_create_ad_slots_internal(user_id, tier, existing_conn=conn)
+                        if ad_slots:
+                            self.logger.info(f"✅ Created {len(ad_slots)} ad slots for user {user_id}")
+                        else:
+                            self.logger.warning(f"⚠️ Failed to create ad slots for user {user_id}")
+                    except Exception as slot_error:
+                        self.logger.error(f"❌ Error creating ad slots for user {user_id}: {slot_error}")
+                    
+                    return True
+                    
+                except sqlite3.Error as e:
+                    self.logger.error(f"❌ Database error activating subscription for user {user_id}: {e}")
+                    if conn:
+                        try:
+                            conn.rollback()
+                        except:
+                            pass
+                    return False
+                finally:
+                    if conn:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                
+            except Exception as e:
+                self.logger.error(f"❌ Critical error activating subscription for user {user_id}: {e}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                return False
+
+    async def _activate_subscription_internal(self, user_id: int, tier: str, duration_days: int = 30) -> bool:
+        """Internal method to activate subscription without acquiring locks (for use within locked contexts)."""
+        conn = None
+        try:
+            # FIX: Add input validation
+            if not user_id or not tier or duration_days <= 0:
+                self.logger.error(f"❌ Invalid subscription parameters: user_id={user_id}, tier={tier}, duration={duration_days}")
+                return False
+            
+            # FIX: Get current subscription with timeout
+            try:
+                current_sub = await self._get_user_subscription_internal(user_id)
+            except Exception as e:
+                self.logger.error(f"❌ Error getting subscription for user {user_id}: {e}")
+                return False
+            
+            # FIX: Calculate new expiry date with proper error handling
+            try:
+                if current_sub and current_sub.get('is_active'):
                     # Extend existing subscription
                     current_expiry = datetime.fromisoformat(current_sub['expires'])
                     new_expiry = current_expiry + timedelta(days=duration_days)
                 else:
                     # Start new subscription
                     new_expiry = datetime.now() + timedelta(days=duration_days)
+            except (ValueError, TypeError) as e:
+                self.logger.error(f"❌ Error calculating expiry date for user {user_id}: {e}")
+                return False
+            
+            # FIX: Use proper database connection with timeout and error handling
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
                 
-                # Update subscription
+                # FIX: Use transaction for atomicity
+                cursor.execute('BEGIN TRANSACTION')
+                
+                # FIX: Check if user exists, create if not
+                cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+                if not cursor.fetchone():
+                    self.logger.info(f"📝 User {user_id} not found, creating user first...")
+                    cursor.execute('''
+                        INSERT INTO users (user_id, username, first_name, last_name, subscription_tier, subscription_expires, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (user_id, f"user_{user_id}", "User", None, tier, new_expiry.isoformat(), datetime.now().isoformat(), datetime.now().isoformat()))
+                    self.logger.info(f"✅ User {user_id} created with subscription")
+                else:
+                    # User exists, update subscription
+                    cursor.execute('''
+                        UPDATE users 
+                        SET subscription_tier = ?, subscription_expires = ?, updated_at = ?
+                        WHERE user_id = ?
+                    ''', (tier, new_expiry.isoformat(), datetime.now().isoformat(), user_id))
+                
+                # FIX: Verify the operation was successful
+                if cursor.rowcount == 0:
+                    self.logger.error(f"❌ No rows updated for user {user_id}")
+                    cursor.execute('ROLLBACK')
+                    return False
+                
+                # FIX: Commit transaction
+                cursor.execute('COMMIT')
+                
+                self.logger.info(f"✅ Activated {tier} subscription for user {user_id} until {new_expiry}")
+                
+                # Automatically create ad slots for the new subscription
+                try:
+                    ad_slots = await self._get_or_create_ad_slots_internal(user_id, tier)
+                    if ad_slots:
+                        self.logger.info(f"✅ Created {len(ad_slots)} ad slots for user {user_id}")
+                    else:
+                        self.logger.warning(f"⚠️ Failed to create ad slots for user {user_id}")
+                except Exception as slot_error:
+                    self.logger.error(f"❌ Error creating ad slots for user {user_id}: {slot_error}")
+                
+                return True
+                
+            except sqlite3.Error as e:
+                self.logger.error(f"❌ Database error activating subscription for user {user_id}: {e}")
+                if conn:
+                    try:
+                        conn.rollback()
+                    except:
+                        pass
+                return False
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except:
+                        pass
+            
+        except Exception as e:
+            self.logger.error(f"❌ Critical error activating subscription for user {user_id}: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return False
+
+    async def _get_or_create_ad_slots_internal(self, user_id: int, tier: str = 'basic', existing_conn=None) -> List[Dict[str, Any]]:
+        """Internal method to get or create ad slots without acquiring locks."""
+        try:
+            if existing_conn:
+                # Use existing connection (for use within transactions)
+                conn = existing_conn
+                cursor = conn.cursor()
+            else:
+                # Create new connection
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+            
+            # Define slot counts per tier
+            tier_slots = {
+                'basic': 1,
+                'pro': 3,
+                'enterprise': 5
+            }
+            
+            target_slots = tier_slots.get(tier, 1)
+            
+            # Check existing slots
+            cursor.execute("""
+                SELECT id, slot_number, content, file_id, is_active, interval_minutes, last_sent_at
+                FROM ad_slots 
+                WHERE user_id = ? 
+                ORDER BY slot_number
+            """, (user_id,))
+            
+            existing_slots = cursor.fetchall()
+            self.logger.info(f"Found {len(existing_slots)} existing ad slots for user {user_id}")
+            
+            # Create missing slots
+            slots_created = 0
+            for slot_number in range(1, target_slots + 1):
+                slot_exists = any(slot['slot_number'] == slot_number for slot in existing_slots)
+                
+                if not slot_exists:
+                    cursor.execute("""
+                        INSERT INTO ad_slots (user_id, slot_number, content, is_active, interval_minutes, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (user_id, slot_number, "", True, 60, datetime.now()))
+                    slots_created += 1
+                    self.logger.info(f"Created ad slot {slot_number} for user {user_id}")
+            
+            if slots_created > 0:
+                self.logger.info(f"Created {slots_created} new ad slots for user {user_id}")
+            else:
+                self.logger.info(f"No new ad slots needed for user {user_id} - all slots already exist")
+            
+            # Commit the transaction to ensure slots are saved (only if we created the connection)
+            if not existing_conn:
+                conn.commit()
+                conn.close()
+                
+                # Reopen connection to ensure we see the committed data
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+            
+            # Get all slots (including newly created ones)
+            cursor.execute("""
+                SELECT id, slot_number, content, file_id, is_active, interval_minutes, last_sent_at
+                FROM ad_slots 
+                WHERE user_id = ? 
+                ORDER BY slot_number
+            """, (user_id,))
+            
+            all_slots = cursor.fetchall()
+            self.logger.info(f"After commit - found {len(all_slots)} slots for user {user_id}")
+            for slot in all_slots:
+                self.logger.info(f"  Slot: ID={slot['id']}, Number={slot['slot_number']}")
+            
+            # Close connection only if we created it
+            if not existing_conn:
+                conn.close()
+            
+            # Convert to list of dictionaries
+            slots_list = []
+            for slot in all_slots:
+                slots_list.append({
+                    'id': slot['id'],
+                    'slot_number': slot['slot_number'],
+                    'content': slot['content'],
+                    'file_id': slot['file_id'],
+                    'is_active': bool(slot['is_active']),
+                    'interval_minutes': slot['interval_minutes'],
+                    'last_sent_at': slot['last_sent_at']
+                })
+            
+            self.logger.info(f"Retrieved {len(slots_list)} ad slots for user {user_id}")
+            return slots_list
+            
+        except Exception as e:
+            self.logger.error(f"Error getting/creating ad slots for user {user_id}: {e}")
+            return []
+
+    async def delete_payment(self, payment_id: str) -> bool:
+        """Delete a payment from the database."""
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM payments WHERE payment_id = ?', (payment_id,))
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"✅ Deleted payment {payment_id}")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Error deleting payment {payment_id}: {e}")
+                return False
+
+    async def delete_user_subscription(self, user_id: int) -> bool:
+        """Delete user subscription."""
+        async with self._get_lock():
+            try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
                 cursor.execute('''
                     UPDATE users 
-                    SET subscription_tier = ?, subscription_expires = ?, updated_at = ?
+                    SET subscription_tier = NULL, subscription_expires = NULL, updated_at = ?
                     WHERE user_id = ?
-                ''', (tier, new_expiry, datetime.now(), user_id))
+                ''', (datetime.now(), user_id))
                 conn.commit()
                 conn.close()
                 
-                self.logger.info(f"✅ Activated {tier} subscription for user {user_id} until {new_expiry}")
+                self.logger.info(f"✅ Deleted subscription for user {user_id}")
                 return True
                 
             except Exception as e:
-                self.logger.error(f"Error activating subscription: {e}")
+                self.logger.error(f"Error deleting subscription for user {user_id}: {e}")
                 return False
 
     async def close(self):
@@ -997,77 +1414,857 @@ class DatabaseManager:
 
     # --- Methods merged from PostgreSQL database ---
 
-    async def _create_tables(self, *args, **kwargs):
-        """_create_tables - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method _create_tables not yet implemented for SQLite")
-        return None
+    async def _create_tables(self) -> bool:
+        """Create all required database tables if they don't exist."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create users table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    subscription_tier TEXT,
+                    subscription_expires TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Create payments table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS payments (
+                    payment_id TEXT PRIMARY KEY,
+                    user_id INTEGER,
+                    amount_usd REAL,
+                    crypto_type TEXT,
+                    payment_provider TEXT,
+                    pay_to_address TEXT,
+                    expected_amount_crypto REAL,
+                    payment_url TEXT,
+                    expires_at TEXT,
+                    attribution_method TEXT,
+                    status TEXT DEFAULT 'pending',
+                    transaction_hash TEXT,
+                    manual_verification INTEGER DEFAULT 0,
+                    verified_by_admin INTEGER,
+                    last_checked TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            ''')
+            
+            # Create ad_slots table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ad_slots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    slot_number INTEGER,
+                    content TEXT,
+                    file_id TEXT,
+                    category TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    interval_minutes INTEGER DEFAULT 60,
+                    last_sent_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            ''')
+            
+            # Create slot_destinations table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS slot_destinations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id INTEGER,
+                    destination_type TEXT,
+                    destination_id TEXT,
+                    destination_name TEXT,
+                    alias TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (slot_id) REFERENCES ad_slots (id)
+                )
+            ''')
+            
+            # Create admin_ad_slots table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_ad_slots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_number INTEGER,
+                    content TEXT,
+                    file_id TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    interval_minutes INTEGER DEFAULT 60,
+                    last_sent_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Create admin_slot_destinations table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_slot_destinations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id INTEGER,
+                    destination_type TEXT,
+                    destination_id TEXT,
+                    destination_name TEXT,
+                    alias TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (slot_id) REFERENCES admin_ad_slots (id)
+                )
+            ''')
+            
+            # Create workers table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS workers (
+                    worker_id INTEGER PRIMARY KEY,
+                    api_id TEXT,
+                    api_hash TEXT,
+                    phone_number TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Create worker_usage table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS worker_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    worker_id INTEGER,
+                    hourly_posts INTEGER DEFAULT 0,
+                    daily_posts INTEGER DEFAULT 0,
+                    hourly_limit INTEGER DEFAULT 15,
+                    daily_limit INTEGER DEFAULT 150,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (worker_id) REFERENCES workers (worker_id)
+                )
+            ''')
+            
+            # Create worker_cooldowns table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS worker_cooldowns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    worker_id INTEGER,
+                    destination_id TEXT,
+                    cooldown_until TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (worker_id) REFERENCES workers (worker_id)
+                )
+            ''')
+            
+            # Create worker_health table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS worker_health (
+                    worker_id INTEGER PRIMARY KEY,
+                    ban_count INTEGER DEFAULT 0,
+                    last_ban_date TIMESTAMP,
+                    is_banned BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (worker_id) REFERENCES workers (worker_id)
+                )
+            ''')
+            
+            # Create worker_activity_log table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS worker_activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    worker_id INTEGER,
+                    destination_id TEXT,
+                    destination_name TEXT,
+                    action_type TEXT,
+                    success BOOLEAN,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (worker_id) REFERENCES workers (worker_id)
+                )
+            ''')
+            
+            # Create failed_group_joins table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS failed_group_joins (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    worker_id INTEGER,
+                    group_id TEXT,
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (worker_id) REFERENCES workers (worker_id)
+                )
+            ''')
+            
+            conn.commit()
+            conn.close()
+            
+            self.logger.info("✅ All database tables created successfully")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error creating database tables: {e}")
+            return False
 
-    async def create_user(self, *args, **kwargs):
-        """create_user - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method create_user not yet implemented for SQLite")
-        return None
+    async def create_user(self, user_id: int, username: str = None, first_name: str = None) -> bool:
+        """Create a new user in the database with timeout protection."""
+        async with self._get_lock():
+            conn = None
+            try:
+                # FIX: Add input validation
+                if not user_id:
+                    self.logger.error(f"❌ Invalid user_id: {user_id}")
+                    return False
+                
+                # FIX: Use proper database connection with timeout
+                conn = sqlite3.connect(self.db_path, timeout=10.0)
+                cursor = conn.cursor()
+                
+                # FIX: Check if user already exists with proper error handling
+                cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+                existing_user = cursor.fetchone()
+                
+                if existing_user:
+                    self.logger.info(f"✅ User {user_id} already exists in database")
+                    return True  # User already exists
+                
+                # FIX: Create new user with proper error handling
+                cursor.execute('''
+                    INSERT INTO users (user_id, username, first_name, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (user_id, username, first_name, datetime.now().isoformat(), datetime.now().isoformat()))
+                
+                # FIX: Verify the insert was successful
+                if cursor.rowcount == 0:
+                    self.logger.error(f"❌ Failed to insert user {user_id}")
+                    return False
+                
+                conn.commit()
+                self.logger.info(f"✅ Created user {user_id} in database")
+                return True
+                
+            except sqlite3.IntegrityError as e:
+                self.logger.warning(f"⚠️ User {user_id} already exists (integrity error): {e}")
+                return True  # User exists, consider it success
+            except sqlite3.Error as e:
+                self.logger.error(f"❌ Database error creating user {user_id}: {e}")
+                return False
+            except Exception as e:
+                self.logger.error(f"❌ Error creating user {user_id}: {e}")
+                return False
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except:
+                        pass
 
-    async def get_user_ad_slots(self, *args, **kwargs):
-        """get_user_ad_slots - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method get_user_ad_slots not yet implemented for SQLite")
-        return None
+    async def get_user_ad_slots(self, user_id: int) -> List[Dict[str, Any]]:
+        """Get all ad slots for a user.
+        
+        Args:
+            user_id: Telegram user ID
+            
+        Returns:
+            List of ad slot dictionaries
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT id, slot_number, content, file_id, is_active, interval_minutes, last_sent_at, created_at
+                    FROM ad_slots 
+                    WHERE user_id = ? 
+                    ORDER BY slot_number
+                """, (user_id,))
+                
+                slots = cursor.fetchall()
+                conn.close()
+                
+                # Convert to list of dictionaries
+                slots_list = []
+                for slot in slots:
+                    slots_list.append({
+                        'id': slot['id'],
+                        'slot_number': slot['slot_number'],
+                        'content': slot['content'],
+                        'file_id': slot['file_id'],
+                        'is_active': bool(slot['is_active']),
+                        'interval_minutes': slot['interval_minutes'],
+                        'last_sent_at': slot['last_sent_at'],
+                        'created_at': slot['created_at']
+                    })
+                
+                return slots_list
+                
+            except Exception as e:
+                self.logger.error(f"Error getting user ad slots for {user_id}: {e}")
+                return []
 
-    async def get_or_create_ad_slots(self, *args, **kwargs):
-        """get_or_create_ad_slots - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method get_or_create_ad_slots not yet implemented for SQLite")
-        return None
+    async def get_or_create_ad_slots(self, user_id: int, tier: str = 'basic') -> List[Dict[str, Any]]:
+        """Get or create ad slots for a user based on their subscription tier.
+        
+        Args:
+            user_id: Telegram user ID
+            tier: Subscription tier (basic, pro, enterprise)
+            
+        Returns:
+            List of ad slot dictionaries
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # Define slot counts per tier
+                tier_slots = {
+                    'basic': 1,
+                    'pro': 3,
+                    'enterprise': 5
+                }
+                
+                target_slots = tier_slots.get(tier, 1)
+                
+                # Check existing slots
+                cursor.execute("""
+                    SELECT id, slot_number, content, file_id, is_active, interval_minutes, last_sent_at
+                    FROM ad_slots 
+                    WHERE user_id = ? 
+                    ORDER BY slot_number
+                """, (user_id,))
+                
+                existing_slots = cursor.fetchall()
+                
+                # Create missing slots
+                for slot_number in range(1, target_slots + 1):
+                    slot_exists = any(slot['slot_number'] == slot_number for slot in existing_slots)
+                    
+                    if not slot_exists:
+                        cursor.execute("""
+                            INSERT INTO ad_slots (user_id, slot_number, content, is_active, interval_minutes, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (user_id, slot_number, "", True, 60, datetime.now()))
+                        self.logger.info(f"Created ad slot {slot_number} for user {user_id}")
+                
+                # Get all slots (including newly created ones)
+                cursor.execute("""
+                    SELECT id, slot_number, content, file_id, is_active, interval_minutes, last_sent_at
+                    FROM ad_slots 
+                    WHERE user_id = ? 
+                    ORDER BY slot_number
+                """, (user_id,))
+                
+                all_slots = cursor.fetchall()
+                conn.close()
+                
+                # Convert to list of dictionaries
+                slots_list = []
+                for slot in all_slots:
+                    slots_list.append({
+                        'id': slot['id'],
+                        'slot_number': slot['slot_number'],
+                        'content': slot['content'],
+                        'file_id': slot['file_id'],
+                        'is_active': bool(slot['is_active']),
+                        'interval_minutes': slot['interval_minutes'],
+                        'last_sent_at': slot['last_sent_at']
+                    })
+                
+                self.logger.info(f"Retrieved {len(slots_list)} ad slots for user {user_id}")
+                return slots_list
+                
+            except Exception as e:
+                self.logger.error(f"Error getting/creating ad slots for user {user_id}: {e}")
+                return []
 
-    async def get_ad_slot_by_id(self, *args, **kwargs):
-        """get_ad_slot_by_id - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method get_ad_slot_by_id not yet implemented for SQLite")
-        return None
+    async def get_ad_slot_by_id(self, slot_id: int) -> Optional[Dict[str, Any]]:
+        """Get a specific ad slot by ID.
+        
+        Args:
+            slot_id: Ad slot ID
+            
+        Returns:
+            Ad slot dictionary or None if not found
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT id, user_id, slot_number, content, file_id, is_active, interval_minutes, last_sent_at, created_at
+                    FROM ad_slots 
+                    WHERE id = ?
+                """, (slot_id,))
+                
+                slot = cursor.fetchone()
+                conn.close()
+                
+                if slot:
+                    return {
+                        'id': slot['id'],
+                        'user_id': slot['user_id'],
+                        'slot_number': slot['slot_number'],
+                        'content': slot['content'],
+                        'file_id': slot['file_id'],
+                        'is_active': bool(slot['is_active']),
+                        'interval_minutes': slot['interval_minutes'],
+                        'last_sent_at': slot['last_sent_at'],
+                        'created_at': slot['created_at']
+                    }
+                else:
+                    return None
+                
+            except Exception as e:
+                self.logger.error(f"Error getting ad slot {slot_id}: {e}")
+                return None
 
-    async def update_ad_slot_content(self, *args, **kwargs):
-        """update_ad_slot_content - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method update_ad_slot_content not yet implemented for SQLite")
-        return None
+    async def _get_ad_slot_by_id_internal(self, slot_id: int) -> Optional[Dict[str, Any]]:
+        """Internal method to get ad slot by ID without acquiring locks."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, user_id, slot_number, content, file_id, is_active, interval_minutes, last_sent_at, created_at
+                FROM ad_slots 
+                WHERE id = ?
+            """, (slot_id,))
+            
+            slot = cursor.fetchone()
+            conn.close()
+            
+            if slot:
+                return {
+                    'id': slot['id'],
+                    'user_id': slot['user_id'],
+                    'slot_number': slot['slot_number'],
+                    'content': slot['content'],
+                    'file_id': slot['file_id'],
+                    'is_active': bool(slot['is_active']),
+                    'interval_minutes': slot['interval_minutes'],
+                    'last_sent_at': slot['last_sent_at'],
+                    'created_at': slot['created_at']
+                }
+            else:
+                return None
+            
+        except Exception as e:
+            self.logger.error(f"Error getting ad slot {slot_id}: {e}")
+            return None
 
-    async def update_ad_slot_schedule(self, *args, **kwargs):
-        """update_ad_slot_schedule - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method update_ad_slot_schedule not yet implemented for SQLite")
-        return None
+    async def update_slot_category(self, slot_id: int, category: str) -> bool:
+        """Update the category of an ad slot.
+        
+        Args:
+            slot_id: Ad slot ID
+            category: Category name
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    UPDATE ad_slots 
+                    SET category = ?, updated_at = ?
+                    WHERE id = ?
+                """, (category, datetime.now(), slot_id))
+                
+                conn.commit()
+                conn.close()
+                
+                if cursor.rowcount > 0:
+                    self.logger.info(f"✅ Updated category for ad slot {slot_id} to {category}")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ No ad slot found with ID {slot_id}")
+                    return False
+                
+            except Exception as e:
+                self.logger.error(f"Error updating category for ad slot {slot_id}: {e}")
+                return False
 
-    async def update_ad_slot_status(self, *args, **kwargs):
-        """update_ad_slot_status - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method update_ad_slot_status not yet implemented for SQLite")
-        return None
+    async def update_ad_slot_content(self, slot_id: int, content: str, file_id: str = None) -> bool:
+        """Update the content of an ad slot.
+        
+        Args:
+            slot_id: Ad slot ID
+            content: New ad content
+            file_id: Optional file ID for media
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    UPDATE ad_slots 
+                    SET content = ?, file_id = ?, updated_at = ?
+                    WHERE id = ?
+                """, (content, file_id, datetime.now(), slot_id))
+                
+                conn.commit()
+                conn.close()
+                
+                if cursor.rowcount > 0:
+                    self.logger.info(f"✅ Updated content for ad slot {slot_id}")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ No ad slot found with ID {slot_id}")
+                    return False
+                
+            except Exception as e:
+                self.logger.error(f"Error updating ad slot content for {slot_id}: {e}")
+                return False
 
-    async def get_destinations_for_slot(self, *args, **kwargs):
-        """get_destinations_for_slot - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method get_destinations_for_slot not yet implemented for SQLite")
-        return None
+    async def update_ad_slot_schedule(self, slot_id: int, interval_minutes: int, slot_type: str = 'user') -> bool:
+        """Update the posting schedule for an ad slot.
+        
+        Args:
+            slot_id: Ad slot ID
+            interval_minutes: New interval in minutes
+            slot_type: Type of slot ('user' or 'admin')
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Determine table based on slot type
+                table_name = 'admin_ad_slots' if slot_type == 'admin' else 'ad_slots'
+                
+                cursor.execute(f"""
+                    UPDATE {table_name} 
+                    SET interval_minutes = ?, updated_at = ?
+                    WHERE id = ?
+                """, (interval_minutes, datetime.now(), slot_id))
+                
+                conn.commit()
+                conn.close()
+                
+                if cursor.rowcount > 0:
+                    self.logger.info(f"✅ Updated schedule for {slot_type} slot {slot_id}: {interval_minutes} minutes")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ No {slot_type} slot found with ID {slot_id}")
+                    return False
+                
+            except Exception as e:
+                self.logger.error(f"Error updating schedule for {slot_type} slot {slot_id}: {e}")
+                return False
 
-    async def update_destinations_for_slot(self, *args, **kwargs):
-        """update_destinations_for_slot - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method update_destinations_for_slot not yet implemented for SQLite")
-        return None
+    async def update_ad_slot_status(self, slot_id: int, is_active: bool) -> bool:
+        """Update the active status of an ad slot.
+        
+        Args:
+            slot_id: Ad slot ID
+            is_active: New active status
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    UPDATE ad_slots 
+                    SET is_active = ?, updated_at = ?
+                    WHERE id = ?
+                """, (is_active, datetime.now(), slot_id))
+                
+                conn.commit()
+                conn.close()
+                
+                if cursor.rowcount > 0:
+                    status_text = "activated" if is_active else "deactivated"
+                    self.logger.info(f"✅ {status_text.capitalize()} ad slot {slot_id}")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ No ad slot found with ID {slot_id}")
+                    return False
+                
+            except Exception as e:
+                self.logger.error(f"Error updating ad slot status for {slot_id}: {e}")
+                return False
 
-    async def get_bot_statistics(self, *args, **kwargs):
-        """get_bot_statistics - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method get_bot_statistics not yet implemented for SQLite")
-        return None
+    async def get_destinations_for_slot(self, slot_id: int) -> List[Dict[str, Any]]:
+        """Get destinations for a specific ad slot.
+        
+        Args:
+            slot_id: Ad slot ID
+            
+        Returns:
+            List of destination dictionaries
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT id, destination_type, destination_id, destination_name, alias, is_active
+                    FROM slot_destinations 
+                    WHERE slot_id = ? AND is_active = 1
+                    ORDER BY id
+                """, (slot_id,))
+                
+                destinations = cursor.fetchall()
+                conn.close()
+                
+                # Convert to list of dictionaries
+                destinations_list = []
+                for dest in destinations:
+                    destinations_list.append({
+                        'id': dest['id'],
+                        'destination_type': dest['destination_type'],
+                        'destination_id': dest['destination_id'],
+                        'destination_name': dest['destination_name'],
+                        'alias': dest['alias'],
+                        'is_active': bool(dest['is_active'])
+                    })
+                
+                return destinations_list
+                
+            except Exception as e:
+                self.logger.error(f"Error getting destinations for slot {slot_id}: {e}")
+                return []
 
-    async def update_ad_last_sent(self, *args, **kwargs):
-        """update_ad_last_sent - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method update_ad_last_sent not yet implemented for SQLite")
-        return None
+    async def update_destinations_for_slot(self, slot_id: int, destinations: List[Dict[str, Any]]) -> bool:
+        """Update destinations for a specific ad slot.
+        
+        Args:
+            slot_id: Ad slot ID
+            destinations: List of destination dictionaries
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        async with self._get_lock():
+            conn = None
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Start transaction
+                cursor.execute('BEGIN TRANSACTION')
+                
+                # First, deactivate all existing destinations for this slot
+                cursor.execute("""
+                    UPDATE slot_destinations 
+                    SET is_active = 0
+                    WHERE slot_id = ?
+                """, (slot_id,))
+                
+                # Insert new destinations
+                for dest in destinations:
+                    cursor.execute("""
+                        INSERT INTO slot_destinations 
+                        (slot_id, destination_type, destination_id, destination_name, alias, is_active, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        slot_id,
+                        dest.get('destination_type', 'group'),
+                        dest.get('destination_id'),
+                        dest.get('destination_name'),
+                        dest.get('alias'),
+                        1,  # is_active
+                        datetime.now()
+                    ))
+                
+                # Commit transaction
+                cursor.execute('COMMIT')
+                conn.close()
+                
+                self.logger.info(f"✅ Updated {len(destinations)} destinations for slot {slot_id}")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Error updating destinations for slot {slot_id}: {e}")
+                if conn:
+                    try:
+                        conn.rollback()
+                    except:
+                        pass
+                return False
+
+    async def get_slot_destinations(self, slot_id: int, slot_type: str = 'user') -> List[Dict[str, Any]]:
+        """Get destinations for a slot (used by posting system).
+        
+        Args:
+            slot_id: Ad slot ID
+            slot_type: Type of slot ('user' or 'admin')
+            
+        Returns:
+            List of destination dictionaries
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # Determine table based on slot type
+                if slot_type == 'admin':
+                    table_name = 'admin_slot_destinations'
+                else:
+                    table_name = 'slot_destinations'
+                
+                cursor.execute(f"""
+                    SELECT * FROM {table_name}
+                    WHERE slot_id = ? AND is_active = 1
+                    ORDER BY created_at
+                """, (slot_id,))
+                
+                destinations = [dict(row) for row in cursor.fetchall()]
+                conn.close()
+                
+                self.logger.info(f"get_slot_destinations({slot_id}, {slot_type}): Found {len(destinations)} destinations")
+                return destinations
+                
+            except Exception as e:
+                self.logger.error(f"Error getting slot destinations: {e}")
+                return []
+    
+    async def get_bot_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive bot statistics.
+        
+        Returns:
+            Dictionary with bot statistics
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                stats = {}
+                
+                # Total users
+                cursor.execute("SELECT COUNT(*) as count FROM users")
+                stats['total_users'] = cursor.fetchone()['count']
+                
+                # Active subscriptions
+                cursor.execute("""
+                    SELECT COUNT(*) as count 
+                    FROM users 
+                    WHERE subscription_tier IS NOT NULL 
+                    AND subscription_expires > ?
+                """, (datetime.now().isoformat(),))
+                stats['active_subscriptions'] = cursor.fetchone()['count']
+                
+                # Total payments
+                cursor.execute("SELECT COUNT(*) as count FROM payments")
+                stats['total_payments'] = cursor.fetchone()['count']
+                
+                # Completed payments
+                cursor.execute("SELECT COUNT(*) as count FROM payments WHERE status = 'completed'")
+                stats['completed_payments'] = cursor.fetchone()['count']
+                
+                # Total ad slots
+                cursor.execute("SELECT COUNT(*) as count FROM ad_slots")
+                stats['total_ad_slots'] = cursor.fetchone()['count']
+                
+                # Active ad slots
+                cursor.execute("SELECT COUNT(*) as count FROM ad_slots WHERE is_active = 1")
+                stats['active_ad_slots'] = cursor.fetchone()['count']
+                
+                # Total workers
+                cursor.execute("SELECT COUNT(*) as count FROM workers")
+                stats['total_workers'] = cursor.fetchone()['count']
+                
+                # Active workers
+                cursor.execute("SELECT COUNT(*) as count FROM workers WHERE is_active = 1")
+                stats['active_workers'] = cursor.fetchone()['count']
+                
+                # Revenue this month
+                cursor.execute("""
+                    SELECT COALESCE(SUM(amount_usd), 0) as revenue
+                    FROM payments 
+                    WHERE status = 'completed' 
+                    AND created_at >= datetime('now', 'start of month')
+                """)
+                stats['revenue_this_month'] = cursor.fetchone()['revenue']
+                
+                # Recent activity (last 24 hours)
+                cursor.execute("""
+                    SELECT COUNT(*) as count 
+                    FROM worker_activity_log 
+                    WHERE created_at > datetime('now', '-24 hours')
+                """)
+                stats['activity_last_24h'] = cursor.fetchone()['count']
+                
+                conn.close()
+                
+                self.logger.info(f"📊 Retrieved bot statistics: {stats}")
+                return stats
+                
+            except Exception as e:
+                self.logger.error(f"Error getting bot statistics: {e}")
+                return {}
+
+    async def update_ad_last_sent(self, slot_id: int, slot_type: str = 'user') -> bool:
+        """Update the last_sent_at timestamp for an ad slot.
+        
+        Args:
+            slot_id: Ad slot ID
+            slot_type: Type of slot ('user' or 'admin')
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Determine table based on slot type
+                table_name = 'admin_ad_slots' if slot_type == 'admin' else 'ad_slots'
+                
+                cursor.execute(f"""
+                    UPDATE {table_name} 
+                    SET last_sent_at = ?, updated_at = ?
+                    WHERE id = ?
+                """, (datetime.now(), datetime.now(), slot_id))
+                
+                conn.commit()
+                conn.close()
+                
+                if cursor.rowcount > 0:
+                    self.logger.info(f"✅ Updated last_sent_at for {slot_type} slot {slot_id}")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ No {slot_type} slot found with ID {slot_id}")
+                    return False
+                
+            except Exception as e:
+                self.logger.error(f"Error updating last_sent_at for {slot_type} slot {slot_id}: {e}")
+                return False
 
     async def create_payment(self, payment_id: str, user_id: int, amount_usd: float, 
                               crypto_type: str, payment_provider: str, pay_to_address: str,
@@ -1092,29 +2289,413 @@ class DatabaseManager:
                 self.logger.error(f"Error creating payment {payment_id}: {e}")
                 return False
 
-    async def get_expired_subscriptions(self, *args, **kwargs):
-        """get_expired_subscriptions - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method get_expired_subscriptions not yet implemented for SQLite")
-        return None
+    async def recover_missing_subscriptions(self) -> Dict[str, Any]:
+        """Recover subscriptions for users who have completed payments but no active subscription.
+        
+        This method handles the case where payments were verified but subscription activation failed.
+        
+        Returns:
+            Dictionary with recovery results
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # Find users with completed payments but no active subscription
+                cursor.execute("""
+                    SELECT DISTINCT p.user_id, p.amount_usd, p.crypto_type, p.payment_id
+                    FROM payments p
+                    LEFT JOIN users u ON p.user_id = u.user_id
+                    WHERE p.status = 'completed'
+                    AND (u.subscription_tier IS NULL 
+                         OR u.subscription_expires IS NULL 
+                         OR u.subscription_expires < ?)
+                    ORDER BY p.updated_at DESC
+                """, (datetime.now().isoformat(),))
+                
+                recovery_candidates = cursor.fetchall()
+                conn.close()
+                
+                results = {
+                    'total_candidates': len(recovery_candidates),
+                    'recovered': 0,
+                    'failed': 0,
+                    'errors': []
+                }
+                
+                for candidate in recovery_candidates:
+                    user_id = candidate['user_id']
+                    amount_usd = candidate['amount_usd']
+                    payment_id = candidate['payment_id']
+                    
+                    try:
+                        # Determine tier from payment amount
+                        if amount_usd == 15.0:
+                            tier = 'basic'
+                        elif amount_usd == 45.0:
+                            tier = 'pro'
+                        elif amount_usd == 75.0:
+                            tier = 'enterprise'
+                        else:
+                            tier = 'basic'  # Default to basic
+                        
+                        # Activate subscription without lock (we're already in a locked context)
+                        success = await self._activate_subscription_internal(user_id, tier, 30)
+                        
+                        if success:
+                            results['recovered'] += 1
+                            self.logger.info(f"✅ Recovered subscription for user {user_id} from payment {payment_id}")
+                        else:
+                            results['failed'] += 1
+                            results['errors'].append(f"Failed to activate subscription for user {user_id}")
+                            
+                    except Exception as e:
+                        results['failed'] += 1
+                        results['errors'].append(f"Error recovering user {user_id}: {e}")
+                        self.logger.error(f"❌ Error recovering subscription for user {user_id}: {e}")
+                
+                self.logger.info(f"📊 Recovery completed: {results['recovered']} recovered, {results['failed']} failed")
+                return results
+                
+            except Exception as e:
+                self.logger.error(f"❌ Error in subscription recovery: {e}")
+                return {
+                    'total_candidates': 0,
+                    'recovered': 0,
+                    'failed': 0,
+                    'errors': [f"Recovery failed: {e}"]
+                }
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Perform a comprehensive health check of the database and system.
+        
+        Returns:
+            Dictionary with health check results
+        """
+        health_status = {
+            'database_connection': False,
+            'tables_exist': False,
+            'subscription_flow': False,
+            'payment_flow': False,
+            'ad_slot_flow': False,
+            'missing_subscriptions': 0,
+            'orphaned_payments': 0,
+            'errors': []
+        }
+        
+        try:
+            # Test database connection
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            health_status['database_connection'] = True
+            
+            # Check if all required tables exist
+            required_tables = ['users', 'payments', 'ad_slots', 'slot_destinations', 'admin_ad_slots', 'admin_slot_destinations']
+            existing_tables = []
+            
+            for table in required_tables:
+                try:
+                    cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
+                    if cursor.fetchone():
+                        existing_tables.append(table)
+                except Exception as e:
+                    health_status['errors'].append(f"Error checking table {table}: {e}")
+            
+            health_status['tables_exist'] = len(existing_tables) == len(required_tables)
+            
+            # Check for missing subscriptions (users with completed payments but no active subscription)
+            try:
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT p.user_id)
+                    FROM payments p
+                    LEFT JOIN users u ON p.user_id = u.user_id
+                    WHERE p.status = 'completed'
+                    AND (u.subscription_tier IS NULL 
+                         OR u.subscription_expires IS NULL 
+                         OR u.subscription_expires < ?)
+                """, (datetime.now().isoformat(),))
+                
+                health_status['missing_subscriptions'] = cursor.fetchone()[0]
+                
+            except Exception as e:
+                health_status['errors'].append(f"Error checking missing subscriptions: {e}")
+            
+            # Check for orphaned payments (payments without users)
+            try:
+                cursor.execute("""
+                    SELECT COUNT(*)
+                    FROM payments p
+                    LEFT JOIN users u ON p.user_id = u.user_id
+                    WHERE u.user_id IS NULL
+                """)
+                
+                health_status['orphaned_payments'] = cursor.fetchone()[0]
+                
+            except Exception as e:
+                health_status['errors'].append(f"Error checking orphaned payments: {e}")
+            
+            # Test subscription flow
+            try:
+                # Test subscription activation (without actually creating anything)
+                test_user_id = 999999999  # Use a test user ID
+                test_subscription = await self.get_user_subscription(test_user_id)
+                health_status['subscription_flow'] = True
+            except Exception as e:
+                health_status['errors'].append(f"Error testing subscription flow: {e}")
+            
+            # Test payment flow
+            try:
+                # Test payment retrieval (without actually creating anything)
+                test_payment = await self.get_payment("TEST_PAYMENT_ID")
+                health_status['payment_flow'] = True
+            except Exception as e:
+                health_status['errors'].append(f"Error testing payment flow: {e}")
+            
+            # Test ad slot flow
+            try:
+                # Test ad slot retrieval (without actually creating anything)
+                test_slots = await self.get_user_ad_slots(test_user_id)
+                health_status['ad_slot_flow'] = True
+            except Exception as e:
+                health_status['errors'].append(f"Error testing ad slot flow: {e}")
+            
+            conn.close()
+            
+        except Exception as e:
+            health_status['errors'].append(f"Health check failed: {e}")
+        
+        return health_status
+    
+    async def get_expired_subscriptions(self) -> List[Dict[str, Any]]:
+        """Get all expired subscriptions.
+        
+        Returns:
+            List of expired subscription dictionaries
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT user_id, username, subscription_tier, subscription_expires, created_at
+                    FROM users 
+                    WHERE subscription_tier IS NOT NULL 
+                    AND subscription_expires IS NOT NULL
+                    AND subscription_expires < ?
+                    ORDER BY subscription_expires DESC
+                """, (datetime.now().isoformat(),))
+                
+                expired_subs = cursor.fetchall()
+                conn.close()
+                
+                # Convert to list of dictionaries
+                expired_list = []
+                for sub in expired_subs:
+                    expired_list.append({
+                        'user_id': sub['user_id'],
+                        'username': sub['username'],
+                        'subscription_tier': sub['subscription_tier'],
+                        'subscription_expires': sub['subscription_expires'],
+                        'created_at': sub['created_at']
+                    })
+                
+                self.logger.info(f"Found {len(expired_list)} expired subscriptions")
+                return expired_list
+                
+            except Exception as e:
+                self.logger.error(f"Error getting expired subscriptions: {e}")
+                return []
 
-    async def deactivate_expired_subscriptions(self, *args, **kwargs):
-        """deactivate_expired_subscriptions - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method deactivate_expired_subscriptions not yet implemented for SQLite")
-        return None
+    async def deactivate_expired_subscriptions(self) -> Dict[str, Any]:
+        """Deactivate all expired subscriptions and their associated ad slots.
+        
+        Returns:
+            Dictionary with deactivation results
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Start transaction
+                cursor.execute('BEGIN TRANSACTION')
+                
+                # Get expired subscriptions
+                cursor.execute("""
+                    SELECT user_id, subscription_tier, subscription_expires
+                    FROM users 
+                    WHERE subscription_tier IS NOT NULL 
+                    AND subscription_expires IS NOT NULL
+                    AND subscription_expires < ?
+                """, (datetime.now().isoformat(),))
+                
+                expired_subs = cursor.fetchall()
+                
+                deactivated_count = 0
+                errors = []
+                
+                for sub in expired_subs:
+                    user_id = sub[0]
+                    try:
+                        # Clear subscription data
+                        cursor.execute("""
+                            UPDATE users 
+                            SET subscription_tier = NULL, subscription_expires = NULL, updated_at = ?
+                            WHERE user_id = ?
+                        """, (datetime.now().isoformat(), user_id))
+                        
+                        # Deactivate all ad slots for this user
+                        cursor.execute("""
+                            UPDATE ad_slots 
+                            SET is_active = 0, updated_at = ?
+                            WHERE user_id = ?
+                        """, (datetime.now().isoformat(), user_id))
+                        
+                        deactivated_count += 1
+                        self.logger.info(f"✅ Deactivated expired subscription for user {user_id}")
+                        
+                    except Exception as e:
+                        errors.append(f"Error deactivating user {user_id}: {e}")
+                        self.logger.error(f"❌ Error deactivating subscription for user {user_id}: {e}")
+                
+                # Commit transaction
+                cursor.execute('COMMIT')
+                conn.close()
+                
+                results = {
+                    'total_expired': len(expired_subs),
+                    'deactivated': deactivated_count,
+                    'errors': errors
+                }
+                
+                self.logger.info(f"📊 Deactivation completed: {deactivated_count}/{len(expired_subs)} subscriptions deactivated")
+                return results
+                
+            except Exception as e:
+                self.logger.error(f"❌ Error in deactivate_expired_subscriptions: {e}")
+                return {
+                    'total_expired': 0,
+                    'deactivated': 0,
+                    'errors': [f"Deactivation failed: {e}"]
+                }
 
-    async def get_active_ad_slots(self, *args, **kwargs):
-        """get_active_ad_slots - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method get_active_ad_slots not yet implemented for SQLite")
-        return None
+    async def get_active_ad_slots(self, slot_type: str = 'user') -> List[Dict[str, Any]]:
+        """Get all active ad slots.
+        
+        Args:
+            slot_type: Type of slots to get ('user' or 'admin')
+            
+        Returns:
+            List of active ad slot dictionaries
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # Determine table based on slot type
+                if slot_type == 'admin':
+                    cursor.execute("""
+                        SELECT id, slot_number, content, file_id, is_active, interval_minutes, last_sent_at, created_at
+                        FROM admin_ad_slots 
+                        WHERE is_active = 1
+                        ORDER BY slot_number
+                    """)
+                else:
+                    cursor.execute("""
+                        SELECT id, user_id, slot_number, content, file_id, is_active, interval_minutes, last_sent_at, created_at
+                        FROM ad_slots 
+                        WHERE is_active = 1
+                        ORDER BY user_id, slot_number
+                    """)
+                
+                slots = cursor.fetchall()
+                conn.close()
+                
+                # Convert to list of dictionaries
+                slots_list = []
+                for slot in slots:
+                    slot_dict = {
+                        'id': slot['id'],
+                        'slot_number': slot['slot_number'],
+                        'content': slot['content'],
+                        'file_id': slot['file_id'],
+                        'is_active': bool(slot['is_active']),
+                        'interval_minutes': slot['interval_minutes'],
+                        'last_sent_at': slot['last_sent_at'],
+                        'created_at': slot['created_at']
+                    }
+                    
+                    # Add user_id for user slots
+                    if slot_type != 'admin':
+                        slot_dict['user_id'] = slot['user_id']
+                    
+                    slots_list.append(slot_dict)
+                
+                self.logger.info(f"Found {len(slots_list)} active {slot_type} ad slots")
+                return slots_list
+                
+            except Exception as e:
+                self.logger.error(f"Error getting active {slot_type} ad slots: {e}")
+                return []
 
-    async def get_ad_destinations(self, *args, **kwargs):
-        """get_ad_destinations - merged from PostgreSQL database."""
-        # TODO: Implement this method for SQLite
-        self.logger.warning(f"Method get_ad_destinations not yet implemented for SQLite")
-        return None
+    async def get_ad_destinations(self, slot_id: int, slot_type: str = 'user') -> List[Dict[str, Any]]:
+        """Get all destinations for a specific ad slot.
+        
+        Args:
+            slot_id: Ad slot ID
+            slot_type: Type of slot ('user' or 'admin')
+            
+        Returns:
+            List of destination dictionaries
+        """
+        async with self._get_lock():
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # Determine table based on slot type
+                if slot_type == 'admin':
+                    table_name = 'admin_slot_destinations'
+                else:
+                    table_name = 'slot_destinations'
+                
+                cursor.execute(f"""
+                    SELECT id, destination_type, destination_id, destination_name, alias, is_active, created_at
+                    FROM {table_name}
+                    WHERE slot_id = ? AND is_active = 1
+                    ORDER BY id
+                """, (slot_id,))
+                
+                destinations = cursor.fetchall()
+                conn.close()
+                
+                # Convert to list of dictionaries
+                destinations_list = []
+                for dest in destinations:
+                    destinations_list.append({
+                        'id': dest['id'],
+                        'destination_type': dest['destination_type'],
+                        'destination_id': dest['destination_id'],
+                        'destination_name': dest['destination_name'],
+                        'alias': dest['alias'],
+                        'is_active': bool(dest['is_active']),
+                        'created_at': dest['created_at']
+                    })
+                
+                self.logger.info(f"Found {len(destinations_list)} destinations for {slot_type} slot {slot_id}")
+                return destinations_list
+                
+            except Exception as e:
+                self.logger.error(f"Error getting destinations for {slot_type} slot {slot_id}: {e}")
+                return []
 
     async def initialize_worker_limits(self, worker_id: int) -> bool:
         """Initialize worker limits for a new worker."""
@@ -1347,7 +2928,7 @@ class DatabaseManager:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 
-                # This is a placeholder - implement actual logic to identify problematic destinations
+                # Get destinations with high failure rates in the last 24 hours
                 cursor.execute('''
                     SELECT destination_id, destination_name, 
                            COUNT(*) as error_count

@@ -68,13 +68,23 @@ class DirectPaymentProcessor:
         try:
             # Validate crypto type
             crypto_type = crypto_type.upper()
-            if crypto_type not in self.crypto_addresses:
+            supported_cryptos = ['BTC', 'ETH', 'USDT', 'USDC', 'LTC', 'SOL', 'TON']
+            if crypto_type not in supported_cryptos:
                 return {'error': f"Unsupported cryptocurrency: {crypto_type}"}
             
             # Get crypto address
-            address = self.crypto_addresses.get(crypto_type)
-            if not address:
-                return {'error': f"No address configured for {crypto_type}"}
+            try:
+                from src.utils.env_loader import get_crypto_address
+                address = get_crypto_address(crypto_type)
+                if not address:
+                    # Fall back to cached address
+                    address = self.crypto_addresses.get(crypto_type)
+                
+                if not address:
+                    return {'error': f"Payment address not configured for {crypto_type}. Please contact support to configure {crypto_type} payments."}
+            except Exception as e:
+                self.logger.error(f"Error getting {crypto_type} address: {e}")
+                return {'error': f"Payment system error for {crypto_type}. Please try again or contact support."}
             
             # Validate tier
             if tier not in self.tiers:
@@ -162,7 +172,11 @@ class DirectPaymentProcessor:
     
     async def get_supported_cryptos(self) -> List[str]:
         """Get list of supported cryptocurrencies."""
-        return [crypto for crypto, address in self.crypto_addresses.items() if address]
+        # Always return all supported cryptocurrencies
+        # Address validation will happen during payment creation
+        supported = ['BTC', 'ETH', 'USDT', 'USDC', 'LTC', 'SOL', 'TON']
+        self.logger.info(f"Supported cryptocurrencies: {supported}")
+        return supported
     
     async def _get_crypto_price(self, crypto_type: str) -> Optional[float]:
         """Get current price of cryptocurrency in USD."""

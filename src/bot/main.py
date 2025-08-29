@@ -165,11 +165,11 @@ class AutoFarmingBot:
             self.app.add_handler(set_destinations_conv)
             logger.info("Conversation handlers configured")
 
-            # --- Main Commands ---
-            self.app.add_handler(CommandHandler("my_ads", user_commands.my_ads_command))
+            # --- User Commands ---
             self.app.add_handler(CommandHandler("start", user_commands.start))
             self.app.add_handler(CommandHandler("help", user_commands.help_command))
             self.app.add_handler(CommandHandler("subscribe", user_commands.subscribe))
+            self.app.add_handler(CommandHandler("status", user_commands.status))
             self.app.add_handler(CommandHandler("analytics", user_commands.analytics_command))
             self.app.add_handler(CommandHandler("referral", user_commands.referral_command))
             logger.info("Main command handlers configured")
@@ -183,6 +183,7 @@ class AutoFarmingBot:
             self.app.add_handler(CommandHandler("verify_payment", admin_commands.verify_payment))
             self.app.add_handler(CommandHandler("revenue_stats", admin_commands.revenue_stats))
             self.app.add_handler(CommandHandler("pending_payments", admin_commands.pending_payments))
+            self.app.add_handler(CommandHandler("activate_subscription", admin_commands.activate_subscription))
             logger.info("Admin command handlers configured")
 
             # --- General Callback Handler for other buttons ---
@@ -218,7 +219,7 @@ class AutoFarmingBot:
             if data.startswith("manage_slot:") or data == "back_to_slots" or data.startswith("toggle_ad:"):
                 await user_commands.handle_ad_slot_callback(update, context)
             elif data.startswith("subscribe:") or data.startswith("pay:") or data.startswith("check_payment:"):
-                await user_commands.handle_subscription_callback(update, context)
+                await user_commands.handle_payment_button_callback(update, context)
             elif data.startswith("cmd:"):
                 await user_commands.handle_command_callback(update, context)
             elif data.startswith("select_category:"):

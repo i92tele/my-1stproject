@@ -10,7 +10,7 @@ from telegram.ext import (
 
 from src.config.bot_config import BotConfig
 from src.database.manager import DatabaseManager
-from src.services.blockchain_payments import BlockchainPaymentProcessor
+from multi_crypto_payments import MultiCryptoPaymentProcessor
 from src.notifications import NotificationManager
 from src.error_logger import TelegramErrorLogger
 from src.forwarding import MessageForwarder
@@ -39,8 +39,7 @@ async def post_init(application: Application):
         ('admin_slots', 'Admin ad slots'), ('admin_slot_stats', 'Admin slot statistics'),
     ])
     LOGGER.info("Custom bot commands have been set.")
-    # Initialize database right after bot is ready
-    await application.bot_data['db'].initialize()
+    # Database will be initialized after components are added to bot_data
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Logs errors and notifies the admin."""
@@ -76,13 +75,15 @@ if __name__ == '__main__':
         # Build Application
         app = ApplicationBuilder().token(bot_token).post_init(post_init).build()
         
-        # Initialize components
+        # Initialize components (synchronously)
         config = BotConfig.load_from_env()
         db = DatabaseManager("bot_database.db", LOGGER)
         notifier = NotificationManager(app.bot, LOGGER)
-        payments = BlockchainPaymentProcessor(db, notifier, config, LOGGER)
+        payments = MultiCryptoPaymentProcessor(config, db, LOGGER)
         message_filter = MessageFilter(LOGGER)
         forwarder = MessageForwarder(db, config, LOGGER, message_filter)
+        
+        # Note: Background payment monitoring is handled by separate payment_monitor.py process
         ui_manager = initialize_ui_manager(LOGGER)
         
         app.bot_data.update({
@@ -91,6 +92,10 @@ if __name__ == '__main__':
             'ui_manager': ui_manager,
             'error_logger': TelegramErrorLogger(config.admin_ids[0] if config.admin_ids else 0, app.bot, LOGGER)
         })
+        
+        # Initialize database tables
+        db.initialize_sync()
+        LOGGER.info("Components initialized successfully")
 
         # Add handlers
         suggestion_handler = ConversationHandler(
@@ -99,8 +104,7 @@ if __name__ == '__main__':
                 suggestions.WAITING_FOR_SUGGESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, suggestions.handle_suggestion_text)],
             },
             fallbacks=[CommandHandler("cancel", user.cancel_conversation), MessageHandler(filters.Regex(r'(?i)^cancel$'), user.cancel_conversation)],
-            conversation_timeout=300,
-            per_message=True  # Changed to True to fix PTBUserWarning
+            conversation_timeout=300
         )
 
         # Ad content setting conversation
@@ -113,8 +117,7 @@ if __name__ == '__main__':
                 ],
             },
             fallbacks=[CommandHandler("cancel", user.cancel_conversation)],
-            conversation_timeout=300,
-            per_message=True
+            conversation_timeout=300
         )
 
         # Ad schedule setting conversation
@@ -124,8 +127,7 @@ if __name__ == '__main__':
                 user.SETTING_AD_SCHEDULE: [MessageHandler(filters.TEXT & ~filters.COMMAND, user.set_schedule_receive)],
             },
             fallbacks=[CommandHandler("cancel", user.cancel_conversation)],
-            conversation_timeout=300,
-            per_message=True
+            conversation_timeout=300
         )
 
         # Ad destinations setting conversation
@@ -135,8 +137,7 @@ if __name__ == '__main__':
                 user.SETTING_AD_DESTINATIONS: [CallbackQueryHandler(user.select_destination_category, pattern='^select_category:')],
             },
             fallbacks=[CommandHandler("cancel", user.cancel_conversation)],
-            conversation_timeout=300,
-            per_message=True
+            conversation_timeout=300
         )
 
         app.add_error_handler(error_handler)
@@ -214,7 +215,7 @@ if __name__ == '__main__':
                     await user.handle_command_callback(update, context)
                 else:
                     # Unknown command
-                    logger.warning(f"Unknown command: {command}")
+                    LOGGER.warning(f"Unknown command: {command}")
                     await query.answer("❌ Unknown command")
                     await query.edit_message_text("❌ Unknown command")
             else:
@@ -289,6 +290,7 @@ if __name__ == '__main__':
 
         # Run the bot - let it handle its own event loop
         LOGGER.info("Bot is starting...")
+        LOGGER.info("✅ Background payment monitoring is handled by separate payment_monitor.py process")
         app.run_polling(
             drop_pending_updates=True,
             allowed_updates=["message", "callback_query", "edited_message"]

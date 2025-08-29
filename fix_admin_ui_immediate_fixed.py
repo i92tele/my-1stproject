@@ -218,7 +218,7 @@ def verify_admin_functions():
         import sys
         sys.path.append('src')
         
-        from database.manager import DatabaseManager
+        from src.database.manager import DatabaseManager
         from src.config.bot_config import BotConfig
         
         config = BotConfig.load_from_env()

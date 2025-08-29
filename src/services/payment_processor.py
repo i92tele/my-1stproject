@@ -17,7 +17,7 @@ try:
     TON_AVAILABLE = True
 except ImportError:
     TON_AVAILABLE = False
-    logging.warning("pytonlib not available. Install with: pip install pytonlib")
+    # Don't log warning here - will be handled in the class initialization
 
 class PaymentProcessor:
     """TON cryptocurrency payment processor for ad slot subscriptions."""
@@ -67,7 +67,10 @@ class PaymentProcessor:
                 await self.ton_client.init()
                 self.logger.info("✅ TON client initialized")
             else:
-                self.logger.warning("⚠️ TON client not available - using mock mode")
+                if not TON_AVAILABLE:
+                    self.logger.info("ℹ️ pytonlib not available - TON payments will use external APIs")
+                if not self.ton_api_key:
+                    self.logger.info("ℹ️ TON_API_KEY not configured - TON payments will use public APIs")
             
             # Start background cleanup task
             asyncio.create_task(self._cleanup_expired_payments_loop())

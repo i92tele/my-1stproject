@@ -36,9 +36,25 @@ class BotConfig:
         """Initialize bot configuration from environment variables."""
         # Bot settings
         self.bot_token = os.getenv("BOT_TOKEN")
-        # Make admin_id optional for testing - use 0 if not set
+        # Make admin_id optional for testing and development
+        # Try ADMIN_ID first, then ADMIN_IDS (plural) as fallback
         admin_id_str = os.getenv("ADMIN_ID", "0")
-        self.admin_id = self._parse_admin_id(admin_id_str) if admin_id_str != "0" else 0
+        
+        # Check if ADMIN_ID is a placeholder or invalid value
+        if admin_id_str == "0" or admin_id_str == "your_telegram_user_id_here" or not admin_id_str.isdigit():
+            # Try ADMIN_IDS as fallback
+            admin_ids_str = os.getenv("ADMIN_IDS", "")
+            if admin_ids_str:
+                # Take the first admin ID from the comma-separated list
+                admin_ids = [id.strip() for id in admin_ids_str.split(',') if id.strip()]
+                if admin_ids:
+                    admin_id_str = admin_ids[0]
+        
+        try:
+            self.admin_id = self._parse_admin_id(admin_id_str) if admin_id_str != "0" else 0
+        except ValueError:
+            # If admin_id is invalid, set to 0 for development
+            self.admin_id = 0
         self.bot_name = "AutoFarming Bot"
         
         # Database
@@ -116,11 +132,15 @@ class BotConfig:
         """
         missing_configs = []
         
-        if not self.bot_token:
+        # Only validate BOT_TOKEN if we're in production
+        if self.environment == "production" and not self.bot_token:
             missing_configs.append("BOT_TOKEN")
-        # Make admin_id optional for testing - only require if bot_token is present
-        if self.bot_token and not self.admin_id:
+        
+        # Make admin_id optional for testing and development
+        # Only require admin_id in production if bot_token is present
+        if self.environment == "production" and self.bot_token and self.admin_id == 0:
             missing_configs.append("ADMIN_ID")
+        
         # database_url has a safe default (bot_database.db), so it is not strictly required
         
         if missing_configs:

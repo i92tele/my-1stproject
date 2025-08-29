@@ -535,16 +535,14 @@ async def show_crypto_selection(update: Update, context: ContextTypes.DEFAULT_TY
             'TON': {'symbol': 'TON', 'name': 'Toncoin'},
             'BTC': {'symbol': 'BTC', 'name': 'Bitcoin'},
             'ETH': {'symbol': 'ETH', 'name': 'Ethereum'},
+            'USDT': {'symbol': 'USDT', 'name': 'Tether USD'},
+            'USDC': {'symbol': 'USDC', 'name': 'USD Coin'},
             'SOL': {'symbol': 'SOL', 'name': 'Solana'},
             'LTC': {'symbol': 'LTC', 'name': 'Litecoin'}
         }
         
-        # Only show cryptos that have addresses configured
-        cryptos = {}
-        for crypto_type, crypto_data in all_cryptos.items():
-            address = config.get_crypto_address(crypto_type)
-            if address:  # Only include if address is configured
-                cryptos[crypto_type] = crypto_data
+        # Show all supported cryptos (address validation happens during payment)
+        cryptos = all_cryptos
         
         # Create crypto selection keyboard (without prices)
         keyboard = []
@@ -584,7 +582,7 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         
         if success:
             # Store the slot_id in user_data for the conversation
-            context.user_data['current_slot_id'] = int(slot_id)
+            context.user_data['current_slot_id'] = slot_id
             
             # Show content input prompt
             await query.edit_message_text(
@@ -607,10 +605,11 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
             )
             
     except Exception as e:
-        context.bot_data['logger'].error(f"Error handling category selection: {e}")
+        context.bot_data['logger'].error(f"Error handling content category selection: {e}")
         await query.edit_message_text(
             "❌ Error setting category. Please try again."
         )
+        return ConversationHandler.END
 
 async def send_payment_qr_code(query, crypto_type: str, payment_request: dict) -> bool:
     """Generate and send a QR code for the payment."""
@@ -628,40 +627,61 @@ async def send_payment_qr_code(query, crypto_type: str, payment_request: dict) -
         elif crypto_type == 'BTC':
             # Bitcoin URI with amount
             address = payment_request.get('pay_to_address', '')
-            amount = payment_request['amount_crypto']
+            amount = payment_request.get('amount_crypto', 0)
             qr_data = f"bitcoin:{address}?amount={amount:.8f}"
+        elif crypto_type == 'ETH':
+            # Ethereum URI with amount
+            address = payment_request.get('pay_to_address', '')
+            amount = payment_request.get('amount_crypto', 0)
+            qr_data = f"ethereum:{address}?value={int(amount * 1e18)}"
+        elif crypto_type == 'SOL':
+            # Solana URI with amount
+            address = payment_request.get('pay_to_address', '')
+            amount = payment_request.get('amount_crypto', 0)
+            qr_data = f"solana:{address}?amount={amount}"
+        elif crypto_type == 'LTC':
+            # Litecoin URI with amount
+            address = payment_request.get('pay_to_address', '')
+            amount = payment_request.get('amount_crypto', 0)
+            qr_data = f"litecoin:{address}?amount={amount:.8f}"
+        elif crypto_type == 'USDT':
+            # USDT is an ERC-20 token that uses Ethereum URI with amount
+            address = payment_request.get('pay_to_address', '')
+            amount = payment_request.get('amount_crypto', 0)
+            qr_data = f"ethereum:{address}?value={int(amount * 1e18)}"
+        elif crypto_type == 'USDC':
+            # USDC on Solana uses Solana URI with amount
+            address = payment_request.get('pay_to_address', '')
+            amount = payment_request.get('amount_crypto', 0)
+            qr_data = f"solana:{address}?amount={amount}"
         else:
-            # Generic address for other cryptos
-            qr_data = payment_request.get('pay_to_address', '')
+            # Generic fallback
+            address = payment_request.get('pay_to_address', '')
+            qr_data = address
         
         # Generate QR code
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=10,
-            border=4,
-        )
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
         qr.add_data(qr_data)
         qr.make(fit=True)
         
-        # Create QR code image
-        qr_image = qr.make_image(fill_color="black", back_color="white")
+        # Create image
+        img = qr.make_image(fill_color="black", back_color="white")
         
         # Convert to bytes
-        qr_bytes = BytesIO()
-        qr_image.save(qr_bytes, format='PNG')
-        qr_bytes.seek(0)
+        buffer = BytesIO()
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
         
-        # Send QR code as photo
+        # Send QR code
         await query.message.reply_photo(
-            photo=qr_bytes,
-            caption=f"🔗 {crypto_type} Payment QR Code\n\nScan with your {crypto_type} wallet app"
+            photo=buffer,
+            caption=f"📱 QR Code for {crypto_type} Payment\n\nScan with your {crypto_type} wallet app"
         )
         
         return True
         
     except Exception as e:
-        print(f"QR code generation error: {e}")
+        logger.error(f"Error generating QR code for {crypto_type}: {e}")
         return False
 
 async def handle_crypto_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, tier: str, crypto_type: str):
@@ -696,17 +716,10 @@ async def handle_crypto_selection(update: Update, context: ContextTypes.DEFAULT_
         # Create user-friendly keyboard with essential actions
         keyboard = [
             [
-                InlineKeyboardButton(
-                    "✅ I've Sent the Payment", 
-                    callback_data=f"check_payment:{payment_request['payment_id']}"
-                )
-            ],
-            [
                 InlineKeyboardButton("📋 Copy Address", callback_data=f"copy_address:{crypto_type}"),
                 InlineKeyboardButton("🔄 Check Status", callback_data=f"check_payment:{payment_request['payment_id']}")
             ],
             [
-                InlineKeyboardButton("❌ Cancel Payment", callback_data=f"cancel_payment:{payment_request['payment_id']}"),
                 InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")
             ]
         ]
@@ -741,171 +754,60 @@ async def handle_crypto_selection(update: Update, context: ContextTypes.DEFAULT_
             pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
             payment_id = str(payment_request.get('payment_id', 'N/A'))
             
-            # Check if this is a unique address
-            unique_address = payment_request.get('unique_address', False)
-            attribution_method = payment_request.get('attribution_method', 'amount_only')
-            
-            if attribution_method == 'unique_address':
-                text = (
-                    f"₿ Bitcoin Payment\n"
-                    f"Plan: {tier.title()}\n"
-                    f"Amount: {amount_crypto:.8f} BTC (${amount_usd})\n\n"
-                    f"📍 Send to: {pay_to_address}\n"
-                    f"🔗 **This is your unique payment address**\n\n"
-                    f"🆔 Payment ID: {payment_id}\n"
-                    f"✅ **Unique Address Attribution** - No memo needed!\n"
-                    f"Your payment will be automatically detected and attributed.\n\n"
-                    f"📱 Use your Bitcoin wallet app to scan the QR code above or copy the address manually."
-                )
-            else:
-                text = (
-                    f"₿ Bitcoin Payment\n"
-                    f"Plan: {tier.title()}\n"
-                    f"Amount: {amount_crypto:.8f} BTC (${amount_usd})\n\n"
-                    f"📍 Send to: {pay_to_address}\n\n"
-                    f"🆔 Payment ID: {payment_id}\n"
-                    f"💡 No memo required - payment will be detected automatically\n\n"
-                    f"📱 Use your Bitcoin wallet app to scan the QR code above or copy the address manually."
-                )
+            text = (
+                f"₿ Bitcoin Payment\n"
+                f"Plan: {tier.title()}\n"
+                f"Amount: {amount_crypto:.8f} BTC (${amount_usd})\n\n"
+                f"📍 Send to: {pay_to_address}\n\n"
+                f"🆔 Payment ID: {payment_id}\n"
+                f"💡 **Important:** Send the exact amount shown above\n"
+                f"⏰ Payment will be detected within 30 minutes\n\n"
+                f"📱 Use your Bitcoin wallet app to scan the QR code above or copy the address manually."
+            )
         elif crypto_type == 'ETH':
             pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
             payment_id = str(payment_request.get('payment_id', 'N/A'))
-            attribution_method = payment_request.get('attribution_method', 'amount_only')
-            payment_data = payment_request.get('payment_data', '')
-            
-            if attribution_method == 'transaction_data':
-                text = (
-                    f"Ξ Ethereum Payment\n"
-                    f"Plan: {tier.title()}\n"
-                    f"Amount: {amount_crypto:.6f} ETH (${amount_usd})\n\n"
-                    f"📍 Send to: {pay_to_address}\n"
-                    f"📊 **Include this data:** `{payment_data}`\n\n"
-                    f"🆔 Payment ID: {payment_id}\n"
-                    f"✅ **Transaction Data Attribution** - Include the data field!\n"
-                    f"Your payment will be automatically detected and attributed.\n\n"
-                    f"📱 Use your Ethereum wallet app to scan the QR code above or copy the address manually.\n"
-                    f"💡 **Important:** Make sure to include the data field in your transaction!"
-                )
-            else:
-                text = (
-                    f"Ξ Ethereum Payment\n"
-                    f"Plan: {tier.title()}\n"
-                    f"Amount: {amount_crypto:.6f} ETH (${amount_usd})\n\n"
-                    f"📍 Send to: {pay_to_address}\n\n"
-                    f"🆔 Payment ID: {payment_id}\n"
-                    f"💡 No memo required - payment will be detected automatically\n\n"
-                    f"📱 Use your Ethereum wallet app to scan the QR code above or copy the address manually."
-                )
-        elif crypto_type == 'USDT':
-            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
-            payment_id = str(payment_request.get('payment_id', 'N/A'))
             
             text = (
-                f"💵 USDT Payment\n"
+                f"Ξ Ethereum Payment\n"
                 f"Plan: {tier.title()}\n"
-                f"Amount: {amount_crypto:.2f} USDT (${amount_usd})\n\n"
+                f"Amount: {amount_crypto:.6f} ETH (${amount_usd})\n\n"
                 f"📍 Send to: {pay_to_address}\n\n"
                 f"🆔 Payment ID: {payment_id}\n"
-                f"💡 No memo required - payment will be detected automatically\n\n"
-                f"📱 Use your USDT wallet app to scan the QR code above or copy the address manually."
-            )
-        elif crypto_type == 'USDC':
-            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
-            payment_id = str(payment_request.get('payment_id', 'N/A'))
-            
-            text = (
-                f"💵 USDC Payment\n"
-                f"Plan: {tier.title()}\n"
-                f"Amount: {amount_crypto:.2f} USDC (${amount_usd})\n\n"
-                f"📍 Send to: {pay_to_address}\n\n"
-                f"🆔 Payment ID: {payment_id}\n"
-                f"💡 No memo required - payment will be detected automatically\n\n"
-                f"📱 Use your USDC wallet app to scan the QR code above or copy the address manually."
+                f"💡 **Important:** Send the exact amount shown above\n"
+                f"⏰ Payment will be detected within 30 minutes\n\n"
+                f"📱 Use your Ethereum wallet app to scan the QR code above or copy the address manually."
             )
         elif crypto_type == 'SOL':
             pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
             payment_id = str(payment_request.get('payment_id', 'N/A'))
-            attribution_method = payment_request.get('attribution_method', 'amount_only')
-            memo_instruction = payment_request.get('payment_memo', f'Payment-{payment_id}')
             
-            if attribution_method == 'memo_instruction':
-                text = (
-                    f"⚡ Solana Payment\n"
-                    f"Plan: {tier.title()}\n"
-                    f"Amount: {amount_crypto:.6f} SOL (${amount_usd})\n\n"
-                    f"📍 Send to: {pay_to_address}\n"
-                    f"📝 **Include memo:** `{memo_instruction}`\n\n"
-                    f"🆔 Payment ID: {payment_id}\n"
-                    f"✅ **Memo Attribution** - Include the memo instruction!\n"
-                    f"Your payment will be automatically detected and attributed.\n\n"
-                    f"📱 Use your Solana wallet app to scan the QR code above or copy the address manually.\n"
-                    f"💡 **Important:** Make sure to include the memo in your transaction!"
-                )
-            else:
-                text = (
-                    f"⚡ Solana Payment\n"
-                    f"Plan: {tier.title()}\n"
-                    f"Amount: {amount_crypto:.6f} SOL (${amount_usd})\n\n"
-                    f"📍 Send to: {pay_to_address}\n\n"
-                    f"🆔 Payment ID: {payment_id}\n"
-                    f"💡 No memo required - payment will be detected automatically\n\n"
-                    f"📱 Use your Solana wallet app to scan the QR code above or copy the address manually."
-                )
+            text = (
+                f"⚡ Solana Payment\n"
+                f"Plan: {tier.title()}\n"
+                f"Amount: {amount_crypto:.6f} SOL (${amount_usd})\n\n"
+                f"📍 Send to: {pay_to_address}\n\n"
+                f"🆔 Payment ID: {payment_id}\n"
+                f"💡 **Important:** Send the exact amount shown above\n"
+                f"⏰ Payment will be detected within 30 minutes\n\n"
+                f"📱 Use your Solana wallet app to scan the QR code above or copy the address manually."
+            )
         elif crypto_type == 'LTC':
             pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
             payment_id = str(payment_request.get('payment_id', 'N/A'))
-            attribution_method = payment_request.get('attribution_method', 'amount_only')
-            
-            if attribution_method == 'unique_address':
-                text = (
-                    f"🪙 Litecoin Payment\n"
-                    f"Plan: {tier.title()}\n"
-                    f"Amount: {amount_crypto:.6f} LTC (${amount_usd})\n\n"
-                    f"📍 Send to: {pay_to_address}\n"
-                    f"🔗 **This is your unique payment address**\n\n"
-                    f"🆔 Payment ID: {payment_id}\n"
-                    f"✅ **Unique Address Attribution** - No memo needed!\n"
-                    f"Your payment will be automatically detected and attributed.\n\n"
-                    f"📱 Use your Litecoin wallet app to scan the QR code above or copy the address manually."
-                )
-            else:
-                text = (
-                    f"🪙 Litecoin Payment\n"
-                    f"Plan: {tier.title()}\n"
-                    f"Amount: {amount_crypto:.6f} LTC (${amount_usd})\n\n"
-                    f"📍 Send to: {pay_to_address}\n\n"
-                    f"🆔 Payment ID: {payment_id}\n"
-                    f"💡 No memo required - payment will be detected automatically\n\n"
-                    f"📱 Use your Litecoin wallet app to scan the QR code above or copy the address manually."
-                )
-        elif crypto_type == 'ADA':
-            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
-            payment_id = str(payment_request.get('payment_id', 'N/A'))
             
             text = (
-                f"🔹 Cardano Payment\n"
+                f"🪙 Litecoin Payment\n"
                 f"Plan: {tier.title()}\n"
-                f"Amount: {amount_crypto:.6f} ADA (${amount_usd})\n\n"
+                f"Amount: {amount_crypto:.6f} LTC (${amount_usd})\n\n"
                 f"📍 Send to: {pay_to_address}\n\n"
                 f"🆔 Payment ID: {payment_id}\n"
-                f"💡 No memo required - payment will be detected automatically\n\n"
-                f"📱 Use your Cardano wallet app to scan the QR code above or copy the address manually."
-            )
-        elif crypto_type == 'TRX':
-            pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
-            payment_id = str(payment_request.get('payment_id', 'N/A'))
-            
-            text = (
-                f"🔺 TRON Payment\n"
-                f"Plan: {tier.title()}\n"
-                f"Amount: {amount_crypto:.6f} TRX (${amount_usd})\n\n"
-                f"📍 Send to: {pay_to_address}\n\n"
-                f"🆔 Payment ID: {payment_id}\n"
-                f"💡 No memo required - payment will be detected automatically\n\n"
-                f"📱 Use your TRON wallet app to scan the QR code above or copy the address manually."
+                f"💡 **Important:** Send the exact amount shown above\n"
+                f"⏰ Payment will be detected within 30 minutes\n\n"
+                f"📱 Use your Litecoin wallet app to scan the QR code above or copy the address manually."
             )
         else:
-            # Generic fallback for any other cryptocurrencies (no memo required by default)
+            # Generic fallback for any other cryptocurrencies
             pay_to_address = str(payment_request.get('pay_to_address', 'N/A'))
             payment_id = str(payment_request.get('payment_id', 'N/A'))
             
@@ -915,7 +817,8 @@ async def handle_crypto_selection(update: Update, context: ContextTypes.DEFAULT_
                 f"Amount: {amount_crypto:.6f} {crypto_type} (${amount_usd})\n\n"
                 f"📍 Send to: {pay_to_address}\n\n"
                 f"🆔 Payment ID: {payment_id}\n"
-                f"💡 No memo required - payment will be detected automatically\n\n"
+                f"💡 **Important:** Send the exact amount shown above\n"
+                f"⏰ Payment will be detected within 30 minutes\n\n"
                 f"📱 Use your {crypto_type} wallet app to scan the QR code above or copy the address manually."
             )
         
@@ -1021,79 +924,79 @@ async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text(f"❌ Error creating payment: {str(e)}")
 
 async def check_payment_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, payment_id: str):
-    """Check payment status and process if completed."""
+    """Check payment status from local database (instant response)."""
     query = update.callback_query
     
     try:
-        # Get payment status using multi-crypto processor
-        from multi_crypto_payments import MultiCryptoPaymentProcessor
-        payment_processor = MultiCryptoPaymentProcessor(context.bot_data['config'], context.bot_data['db'], context.bot_data['logger'])
+        # Always answer the callback query first to prevent hanging
+        await query.answer("Checking payment status...")
         
-        # Get payment status
-        status = await payment_processor.get_payment_status(payment_id)
+        # ✅ CORRECT APPROACH: Read from local database (instant response)
+        # The background monitoring service already updates the database
+        payment = await context.bot_data['db'].get_payment(payment_id)
         
-        if status['status'] == 'not_found':
-            await query.edit_message_text(f"❌ Payment not found: {status.get('message')}")
+        if not payment:
+            await query.edit_message_text("❌ Payment not found")
             return
         
-        if status['status'] == 'error':
-            await query.edit_message_text(f"❌ Error checking payment: {status.get('message')}")
-            return
+        # Get the current status from database (no API calls needed)
+        status = payment['status']
+        last_checked = payment.get('last_checked', payment.get('updated_at', 'Unknown'))
         
-        if status['status'] == 'completed':
-            # Payment already completed
+        if status == 'completed':
+            # Payment already completed by background service
             keyboard = [
                 [InlineKeyboardButton("📊 My Status", callback_data="cmd:status")],
                 [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
             ]
             text = (
-                "✅ **Payment Completed!**\n\n"
-                f"Your subscription has been activated.\n"
-                f"Payment ID: `{payment_id}`\n\n"
+                "✅ Payment Completed!\\n\\n"
+                f"Your subscription has been activated.\\n"
+                f"Payment ID: {payment_id}\\n"
+                f"Last checked: {last_checked}\\n\\n"
                 "You can now use your ad slots."
             )
-        elif status['status'] == 'pending':
-            # Check if payment has been received
-            verification = await payment_processor.verify_payment_on_blockchain(payment_id)
+        elif status == 'pending':
+            # Payment still pending - background service is monitoring it
+            from datetime import datetime
+            check_time = datetime.now().strftime("%H:%M:%S")
             
-            if verification:
-                # Payment verified - subscription is automatically activated
-                keyboard = [
-                    [InlineKeyboardButton("📊 My Status", callback_data="cmd:status")],
-                    [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
-                ]
-                text = (
-                    "🎉 **Payment Verified!**\n\n"
-                    f"✅ Subscription activated successfully!\n"
-                    f"🆔 Payment ID: `{payment_id}`\n\n"
-                    "You can now use your ad slots!"
-                )
-            else:
-                # Payment still pending
-                from datetime import datetime
-                check_time = datetime.now().strftime("%H:%M:%S")
-                keyboard = [
-                    [InlineKeyboardButton("🔄 Check Again", callback_data=f"check_payment:{payment_id}")],
-                    [InlineKeyboardButton("❌ Cancel Payment", callback_data=f"cancel_payment:{payment_id}")],
-                    [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
-                ]
-                text = (
-                    "⏳ **Payment Pending**\n\n"
-                    f"We're still waiting for your payment.\n"
-                    f"Payment ID: `{payment_id}`\n"
-                    f"Last checked: {check_time}\n\n"
-                    "Please ensure you sent the correct amount.\n"
-                    "Click 'Check Again' in 30 seconds."
-                )
-        elif status['status'] == 'expired':
+            keyboard = [
+                [InlineKeyboardButton("🔄 Refresh Status", callback_data=f"check_payment:{payment_id}")],
+                [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
+            ]
+            text = (
+                "⏳ Payment Pending\\n\\n"
+                f"We're monitoring your payment automatically.\\n"
+                f"Payment ID: {payment_id}\\n"
+                f"Last checked: {last_checked}\\n"
+                f"Current time: {check_time}\\n\\n"
+                "💡 **Background monitoring is active**\\n"
+                "Your subscription will be activated automatically\\n"
+                "when payment is detected on the blockchain.\\n\\n"
+                "Click 'Refresh Status' to check for updates."
+            )
+        elif status == 'expired':
             keyboard = [
                 [InlineKeyboardButton("💳 Create New Payment", callback_data="cmd:subscribe")],
                 [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
             ]
             text = (
-                "⏰ **Payment Expired**\n\n"
-                f"Payment ID: `{payment_id}`\n\n"
+                "⏰ Payment Expired\\n\\n"
+                f"Payment ID: {payment_id}\\n"
+                f"Last checked: {last_checked}\\n\\n"
                 "Please create a new payment request."
+            )
+        elif status == 'cancelled':
+            keyboard = [
+                [InlineKeyboardButton("💳 Create New Payment", callback_data="cmd:subscribe")],
+                [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
+            ]
+            text = (
+                "❌ Payment Cancelled\\n\\n"
+                f"Payment ID: {payment_id}\\n"
+                f"Last checked: {last_checked}\\n\\n"
+                "You can create a new payment anytime."
             )
         else:
             keyboard = [
@@ -1101,50 +1004,75 @@ async def check_payment_status_callback(update: Update, context: ContextTypes.DE
                 [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
             ]
             text = (
-                f"❓ **Payment Status: {status['status']}**\n\n"
-                f"Payment ID: `{payment_id}`\n\n"
+                f"❓ Payment Status: {status}\\n\\n"
+                f"Payment ID: {payment_id}\\n"
+                f"Last checked: {last_checked}\\n\\n"
                 "Please contact support for assistance."
             )
         
         # Remove markdown formatting to avoid parsing issues
         clean_text = text.replace("**", "").replace("`", "")
-        await query.edit_message_text(clean_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        try:
+            await query.edit_message_text(clean_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception as edit_error:
+            # If message editing fails, try to send a new message
+            import logging
+            logging.warning(f"Failed to edit message: {edit_error}")
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=clean_text,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         
     except Exception as e:
-        logger.error(f"Error in check_payment_status_callback: {e}")
-        await query.edit_message_text(f"❌ Error checking payment: {str(e)}")
+        import logging
+        logging.error(f"Error in check_payment_status_callback: {e}")
+        try:
+            await query.edit_message_text(f"❌ Error checking payment: {str(e)}")
+        except:
+            # If editing fails, send new message
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=f"❌ Error checking payment: {str(e)}"
+            )
 
 async def cancel_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, payment_id: str):
-    """Cancel a pending payment."""
-    query = update.callback_query
-    user_id = update.effective_user.id
-    
-    try:
-        db = context.bot_data['db']
+        """Cancel a pending payment - DISABLED TO PREVENT AUTOMATIC CANCELLATIONS."""
+        query = update.callback_query
+        user_id = update.effective_user.id
         
-        # Update payment status to cancelled
-        success = await db.update_payment_status(payment_id, 'cancelled')
-        
-        if success:
+        try:
+            # FIX: COMPLETELY DISABLE PAYMENT CANCELLATION
+            # This function has been disabled to prevent automatic payment cancellations
+            # that were happening when users clicked UI buttons
+            
             await query.edit_message_text(
-                f"❌ Payment Cancelled\n\n"
+                f"❌ Payment Cancellation Disabled\n\n"
                 f"Payment ID: {payment_id}\n\n"
-                f"You can create a new payment anytime.",
+                f"Payment cancellation has been disabled to prevent accidental cancellations.\n"
+                f"If you need to cancel a payment, please contact support.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("💳 New Payment", callback_data="cmd:subscribe")],
-                    [InlineKeyboardButton("📊 My Status", callback_data="cmd:status")]
+                    [InlineKeyboardButton("🔙 Back", callback_data="cmd:subscribe")]
                 ])
             )
-        else:
-            await query.edit_message_text(
-                f"❌ Could not cancel payment\n\n"
-                f"Payment ID: {payment_id}\n\n"
-                f"Please try again or contact support."
-            )
-    
-    except Exception as e:
-        logger.error(f"Error in cancel_payment_callback: {e}")
-        await query.edit_message_text(f"❌ Error cancelling payment: {str(e)}")
+            
+            # Log the attempt for debugging
+            import logging
+            logging.warning(f"🚫 PAYMENT CANCELLATION ATTEMPT BLOCKED - User {user_id} tried to cancel payment {payment_id}")
+            
+        except Exception as e:
+            import logging
+            logging.error(f"Error in disabled cancel_payment_callback: {e}")
+            try:
+                await query.edit_message_text(f"❌ Error: {str(e)}")
+            except:
+                # If editing fails, send new message
+                await context.bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=f"❌ Error: {str(e)}"
+                )
 
 async def copy_address_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto_type: str):
     """Show copyable address for manual payment in a clear format."""
@@ -1165,11 +1093,11 @@ async def copy_address_callback(update: Update, context: ContextTypes.DEFAULT_TY
             address = getattr(config, 'eth_address', '') or os.getenv('ETH_ADDRESS', '')
             network_name = "Ethereum Network"
         elif crypto_type == 'USDT':
-            address = getattr(config, 'usdt_address', '') or os.getenv('USDT_ADDRESS', '')
-            network_name = "USDT Network"
+            address = getattr(config, 'eth_address', '') or os.getenv('ETH_ADDRESS', '')
+            network_name = "USDT Network (ERC-20)"
         elif crypto_type == 'USDC':
-            address = getattr(config, 'usdc_address', '') or os.getenv('USDC_ADDRESS', '')
-            network_name = "USDC Network"
+            address = getattr(config, 'sol_address', '') or os.getenv('SOL_ADDRESS', '')
+            network_name = "USDC Network (Solana)"
         elif crypto_type == 'SOL':
             address = getattr(config, 'sol_address', '') or os.getenv('SOL_ADDRESS', '')
             network_name = "Solana Network"
@@ -1321,7 +1249,7 @@ def generate_crypto_qr(address: str, amount: float, crypto: str, payment_id: str
         return None
 
 async def check_payment_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check payment status."""
+    """Check payment status from database (instant response)."""
     query = update.callback_query
     await query.answer()
     
@@ -1329,7 +1257,7 @@ async def check_payment_status(update: Update, context: ContextTypes.DEFAULT_TYP
         payment_id = query.data.split(":")[1]
         
         try:
-            # Get payment from database
+            # ✅ CORRECT APPROACH: Read from local database (instant response)
             db = context.bot_data['db']
             payment = await db.get_payment(payment_id)
             
@@ -1337,35 +1265,45 @@ async def check_payment_status(update: Update, context: ContextTypes.DEFAULT_TYP
                 await query.edit_message_text("❌ Payment not found. Please try again.")
                 return
             
-            # Use the new multi-crypto payment processor
-            from multi_crypto_payments import MultiCryptoPaymentProcessor
-            payment_processor = MultiCryptoPaymentProcessor(context.bot_data['config'], context.bot_data['db'], context.bot_data['logger'])
+            # Get status from database (no API calls needed)
+            status = payment['status']
+            last_checked = payment.get('last_checked', 'Unknown')
             
-            # Verify payment on blockchain
-            is_verified = await payment_processor.verify_payment_on_blockchain(payment)
-            
-            if is_verified:
-                status = {'status': 'completed', 'message': 'Payment verified on blockchain'}
-            else:
-                status = {'status': 'pending', 'message': 'Payment not yet detected on blockchain'}
-            
-            if status['status'] == 'completed':
+            if status == 'completed':
                 await query.edit_message_text(
                     "✅ **Payment Confirmed!**\n\n"
-                    "Your subscription is now active. Use /my_ads to manage your ad campaigns.",
+                    f"Your subscription is now active.\n"
+                    f"Payment ID: {payment_id}\n"
+                    f"Last checked: {last_checked}\n\n"
+                    "Use /my_ads to manage your ad campaigns.",
                     parse_mode='Markdown'
                 )
-            elif status['status'] == 'pending':
+            elif status == 'pending':
                 await query.edit_message_text(
                     "⏳ **Payment Pending**\n\n"
-                    "We're still waiting for your payment. Please ensure you sent the correct amount with the memo.\n\n"
-                    "Payment verification is automatic - check back in 30 seconds!",
+                    f"We're monitoring your payment automatically.\n"
+                    f"Payment ID: {payment_id}\n"
+                    f"Last checked: {last_checked}\n\n"
+                    "💡 **Background monitoring is active**\n"
+                    "Your subscription will be activated automatically\n"
+                    "when payment is detected on the blockchain.\n\n"
+                    "Check back in 30 seconds!",
+                    parse_mode='Markdown'
+                )
+            elif status == 'expired':
+                await query.edit_message_text(
+                    "⏰ **Payment Expired**\n\n"
+                    f"Payment ID: {payment_id}\n"
+                    f"Last checked: {last_checked}\n\n"
+                    "Please create a new payment request.",
                     parse_mode='Markdown'
                 )
             else:
                 await query.edit_message_text(
-                    "❌ **Payment Not Found**\n\n"
-                    "Please try again or contact support if you've already sent the payment.",
+                    f"❓ **Payment Status: {status}**\n\n"
+                    f"Payment ID: {payment_id}\n"
+                    f"Last checked: {last_checked}\n\n"
+                    "Please contact support for assistance.",
                     parse_mode='Markdown'
                 )
                 
@@ -1460,8 +1398,8 @@ async def my_ads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             slot_number = slot['slot_number']
             status_icon = "✅" if slot['is_active'] else "⏸️"
             
-            if slot['ad_content']:
-                content_preview = slot['ad_content'][:20] + "..." if len(slot['ad_content']) > 20 else slot['ad_content']
+            if slot['content']:
+                content_preview = slot['content'][:20] + "..." if len(slot['content']) > 20 else slot['content']
                 ad_info = f" - {content_preview}"
             else:
                 ad_info = " - (Empty)"
@@ -1589,13 +1527,26 @@ async def handle_ad_slot_callback(update: Update, context: ContextTypes.DEFAULT_
         # Don't modify query.data, just continue to show the slot details
 
     slot_id = int(query.data.split(":")[1])
-    slot_data = await db.get_ad_slot_by_id(slot_id)
+    logger.info(f"🔍 Looking for ad slot with ID: {slot_id}")
+    
+    # Try internal method first to avoid deadlocks
+    try:
+        slot_data = await db._get_ad_slot_by_id_internal(slot_id)
+        if not slot_data:
+            # Fallback to regular method
+            slot_data = await db.get_ad_slot_by_id(slot_id)
+    except Exception as e:
+        logger.error(f"Error getting slot data: {e}")
+        slot_data = None
+    
+    logger.info(f"🔍 Slot data found: {slot_data}")
     if not slot_data:
+        logger.error(f"❌ Could not find ad slot with ID: {slot_id}")
         await query.edit_message_text("Error: Could not find this ad slot.")
         return
 
     slot_number = slot_data['slot_number']
-    ad_content = slot_data['ad_content']
+    ad_content = slot_data['content']
     interval = slot_data['interval_minutes']
     is_active = slot_data['is_active']
     
@@ -2125,7 +2076,18 @@ async def subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     
     if subscription and subscription['is_active']:
-        status_text = f"✅ **Current Plan:** {subscription['tier'].title()}\n📅 **Expires:** {subscription['expires'].strftime('%Y-%m-%d')}"
+        # Handle expires date formatting
+        expires_value = subscription['expires']
+        if isinstance(expires_value, str):
+            try:
+                expires_dt = datetime.fromisoformat(expires_value)
+                expires_text = expires_dt.strftime('%Y-%m-%d')
+            except Exception:
+                expires_text = expires_value[:10]  # Just show the date part
+        else:
+            expires_text = expires_value.strftime('%Y-%m-%d')
+        
+        status_text = f"✅ **Current Plan:** {subscription['tier'].title()}\n📅 **Expires:** {expires_text}"
     else:
         status_text = "❌ **No active subscription**"
     
@@ -2378,3 +2340,36 @@ async def safe_send_message(update, message_text: str, reply_markup=None, parse_
             "❌ Error formatting message. Please try again.",
             reply_markup=reply_markup
         )
+
+async def handle_payment_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Improved payment button callback handler."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        data = query.data
+        
+        if data.startswith("check_payment:"):
+            payment_id = data.split(":")[1]
+            await check_payment_status_callback(update, context, payment_id)
+        elif data.startswith("pay:"):
+            tier = data.split(":")[1]
+            await show_crypto_selection(update, context, tier)
+        elif data.startswith("crypto:"):
+            parts = data.split(":")
+            if len(parts) == 3:
+                tier = parts[1]
+                crypto_type = parts[2]
+                await handle_crypto_selection(update, context, tier, crypto_type)
+        elif data.startswith("cancel_payment:"):
+            payment_id = data.split(":")[1]
+            await cancel_payment_callback(update, context, payment_id)
+        elif data.startswith("copy_address:"):
+            crypto_type = data.split(":")[1]
+            await copy_address_callback(update, context, crypto_type)
+        else:
+            await query.edit_message_text("❌ Invalid payment callback")
+            
+    except Exception as e:
+        logger.error(f"Error in payment button callback: {e}")
+        await query.edit_message_text("❌ Error processing payment request")

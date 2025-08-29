@@ -120,7 +120,7 @@ async def trigger_posting(force=False):
             try:
                 # Fall back to direct imports
                 from posting_service import PostingService
-                from database import DatabaseManager
+                from src.database.manager import DatabaseManager
                 logger.info("✅ Successfully imported from root directory")
                 using_new_structure = False
             except ImportError:

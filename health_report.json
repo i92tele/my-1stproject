@@ -1,12 +1,10 @@
 {
-  "timestamp": "2025-08-20T18:42:54.076346",
-  "overall_status": "WARNING",
+  "timestamp": "2025-08-29T08:49:16.257186",
+  "overall_status": "HEALTHY",
   "checks": {
     "environment_variables": {
-      "status": "FAIL",
-      "missing_required": [
-        "ADMIN_ID"
-      ],
+      "status": "PASS",
+      "missing_required": [],
       "missing_optional": [
         "USDT_ADDRESS",
         "USDC_ADDRESS",
@@ -14,15 +12,8 @@
         "TRX_ADDRESS"
       ],
       "env_file_exists": true,
-      "issues": [
-        "Missing required environment variable: ADMIN_ID"
-      ],
-      "fixes": [
-        "Create or update config/.env file with required variables",
-        "Set BOT_TOKEN from @BotFather",
-        "Set ADMIN_ID to your Telegram user ID",
-        "Set DATABASE_URL for your database connection"
-      ]
+      "issues": [],
+      "fixes": []
     },
     "dependencies": {
       "status": "PASS",
@@ -76,6 +67,6 @@
   "warnings": [
     "Missing optional variables: USDT_ADDRESS, USDC_ADDRESS, ADA_ADDRESS, TRX_ADDRESS"
   ],
-  "success_count": 8,
+  "success_count": 9,
   "total_checks": 9
 }

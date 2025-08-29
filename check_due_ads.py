@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
-from database import DatabaseManager
+from src.database.manager import DatabaseManager
 from config import BotConfig
 
 # Configure logging

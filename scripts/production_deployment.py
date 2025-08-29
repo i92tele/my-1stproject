@@ -121,7 +121,7 @@ class ProductionDeployment:
             
             # Test bot components
             from src.config import BotConfig
-            from src.database import DatabaseManager
+            from src.database.manager import DatabaseManager
             from src.commands import user, admin
             
             config = BotConfig.load_from_env()

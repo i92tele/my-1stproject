@@ -347,7 +347,7 @@ load_dotenv('config/.env')
 
 # Import bot components
 from src.config import BotConfig
-from src.database import DatabaseManager
+from src.database.manager import DatabaseManager
 from src.services.worker import WorkerManager
 from src.services.payment import PaymentProcessor
 from src.services.posting import PostingService
