@@ -9,6 +9,37 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Broadcast message to all users."""
+    if not await check_admin(update, context):
+        return
+        
+    if not context.args:
+        await send_admin_message(update, "Usage: /broadcast <message>")
+        return
+    
+    message_to_send = ' '.join(context.args)
+    db = context.bot_data['db']
+    
+    users = await db.get_all_users()
+    if not users:
+        await send_admin_message(update, "No users to broadcast to.")
+        return
+    
+    success_count, fail_count = 0, 0
+    await send_admin_message(update, f"📤 Broadcasting to {len(users)} users...")
+    
+    for user in users:
+        try:
+            # Send without Markdown to avoid parsing issues
+            await context.bot.send_message(user['user_id'], f"📢 Broadcast:\n\n{message_to_send}")
+            success_count += 1
+        except Exception as e:
+            fail_count += 1
+            logger.warning(f"Broadcast failed for {user['user_id']}: {e}")
+    
+    await send_admin_message(update, f"✅ Broadcast complete! Success: {success_count}, Failed: {fail_count}")
+
 # Utility function to handle both callback and message contexts
 async def send_admin_message(update: Update, text: str, reply_markup=None, parse_mode=None):
     """Send message handling both callback query and direct message contexts."""

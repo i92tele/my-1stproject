@@ -157,6 +157,7 @@ if __name__ == '__main__':
             "revenue": admin.revenue_stats, "payments": admin.pending_payments, "health": admin.health_stats,
             "test_admin": admin.test_admin, "add_group": admin.add_group, "list_groups": admin.list_groups,
             "admin_stats": admin.admin_stats, "admin_warnings": admin.admin_warnings, "admin_suggestions": admin.admin_suggestions,
+            "broadcast": admin.broadcast,
             # Admin slot commands
             "admin_slots": admin_slots.admin_slots, "admin_slot_stats": admin_slots.admin_slot_stats
         }

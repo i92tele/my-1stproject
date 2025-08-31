@@ -3030,16 +3030,16 @@ class DatabaseManager:
                 self.logger.error(f"Error checking worker ban: {e}")
                 return False
 
-    async def record_posting_attempt(self, worker_id: int, group_id: str, success: bool, error: str = None) -> bool:
+    async def record_posting_attempt(self, worker_id: int, destination_id: str, success: bool, error: str = None) -> bool:
         """Record a posting attempt."""
         async with self._get_lock():
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO worker_activity_log (worker_id, chat_id, success, error, created_at)
+                    INSERT INTO worker_activity_log (worker_id, destination_id, success, error, created_at)
                     VALUES (?, ?, ?, ?, ?)
-                ''', (worker_id, group_id, success, error, datetime.now()))
+                ''', (worker_id, destination_id, success, error, datetime.now()))
                 conn.commit()
                 conn.close()
                 return True

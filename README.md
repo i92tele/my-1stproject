@@ -114,8 +114,54 @@ my-1stproject/
 2. **Configure Environment**
    ```bash
    # Edit config/.env with your credentials
-   nano config/.env
    ```
+
+## 🔄 **Development Workflow**
+
+### **📅 Daily Session Management**
+This project includes a comprehensive session management system for organized development:
+
+#### **🌅 Starting a Development Session**
+1. **Copy and paste** the content from `scripts/session_start_prompt.md`
+2. **AI assistance** will help you:
+   - Create today's session log
+   - Review current project status
+   - Set realistic SMART goals
+   - Organize workspace and files
+   - Identify any blockers or dependencies
+
+#### **🌙 Ending a Development Session**
+1. **Copy and paste** the content from `scripts/session_end_prompt.md`
+2. **AI assistance** will help you:
+   - Assess progress and measure improvements
+   - Organize files into appropriate directories
+   - Update all documentation to current state
+   - Complete comprehensive session log
+   - Prepare goals for next session
+
+#### **📊 Benefits of the Session System**
+- **🎯 Structured Workflow**: Clear priorities and organized approach
+- **📈 Progress Tracking**: Quantified metrics and measurable improvements
+- **🧹 Clean Workspace**: Automatic file organization and cleanup
+- **📚 Current Documentation**: Always up-to-date README files and docs
+- **🔄 Session Continuity**: Smooth transitions with clear handoffs
+
+### **📂 Directory Structure for Development**
+```
+my-1stproject/
+├── scripts/                  # Session prompts and utility scripts
+│   ├── session_start_prompt.md   # Daily session initialization
+│   ├── session_end_prompt.md     # Daily session completion
+│   └── README.md             # Scripts documentation
+├── sessions/                 # Daily session logs
+│   ├── session_template.md      # Template for session tracking
+│   ├── session_YYYY-MM-DD_01.md # Daily session logs
+│   └── README.md             # Session system documentation
+├── src/                      # Modern organized modules
+├── scheduler/                # Automated posting system
+├── config/                   # Configuration files
+└── [other directories...]
+```
 
 3. **Start the Bot**
    ```bash

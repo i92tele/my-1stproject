@@ -228,7 +228,7 @@ class WorkerManager:
             await self.mark_worker_used(worker_id)
             
             # Log successful post
-            await self._log_worker_activity(worker_id, chat_id, True)
+            await self._log_worker_activity(worker_id, str(chat_id), True)
             
             self.logger.info(f"✅ Posted to {chat_id} using worker {worker_id}")
             return True
@@ -245,7 +245,7 @@ class WorkerManager:
             
         except Exception as e:
             self.logger.error(f"Error posting with worker {worker_id}: {e}")
-            await self._log_worker_activity(worker_id, chat_id, False, str(e))
+            await self._log_worker_activity(worker_id, str(chat_id), False, str(e))
             return False
     
     async def _handle_worker_flood_wait(self, worker_id: int, wait_seconds: int):
@@ -261,7 +261,7 @@ class WorkerManager:
         """Handle worker banned in channel."""
         try:
             # Log the ban
-            await self._log_worker_ban(worker_id, chat_id)
+            await self._log_worker_ban(worker_id, str(chat_id))
             self.logger.warning(f"Worker {worker_id} banned in {chat_id}")
         except Exception as e:
             self.logger.error(f"Error handling worker ban: {e}")
@@ -323,14 +323,14 @@ class WorkerManager:
             except Exception as e:
                 self.logger.error(f"Error updating worker cooldown: {e}")
     
-    async def _log_worker_activity(self, worker_id: int, chat_id: int, success: bool, error: str = None):
+    async def _log_worker_activity(self, worker_id: int, destination_id: str, success: bool, error: str = None):
         """Log worker activity to database."""
         async with self.db._lock:
             try:
                 conn = sqlite3.connect(self.db.db_path)
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO worker_activity_log (worker_id, chat_id, success, error, created_at)
+                    INSERT INTO worker_activity_log (worker_id, destination_id, success, error, created_at)
                     VALUES (?, ?, ?, ?, ?)
                 ''', (worker_id, chat_id, success, error, datetime.now()))
                 conn.commit()

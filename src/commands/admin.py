@@ -20,7 +20,8 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📤 Broadcasting to {len(users)} users...")
     for user in users:
         try:
-            await context.bot.send_message(user['user_id'], f"📢 **Broadcast:**\n\n{message_to_send}", parse_mode='Markdown')
+            # Send without Markdown to avoid parsing issues
+            await context.bot.send_message(user['user_id'], f"📢 Broadcast:\n\n{message_to_send}")
             success_count += 1
         except Exception as e:
             fail_count += 1
